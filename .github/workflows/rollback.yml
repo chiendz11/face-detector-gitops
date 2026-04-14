@@ -1,0 +1,51 @@
+name: Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment to rollback'
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - staging
+      rollback_tag:
+        description: 'Optional image tag to rollback to. If blank, uses previous tag history.'
+        required: false
+        default: ''
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Execute rollback on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            if [ "${{ github.event.inputs.environment }}" = "staging" ]; then
+              TARGET_DIR=/home/ubuntu/face-detector-staging
+              ENV_FILE=.env.staging
+            else
+              TARGET_DIR=/home/ubuntu/face-detector
+              ENV_FILE=.env.production
+            fi
+            mkdir -p "$TARGET_DIR"
+            cd "$TARGET_DIR"
+            chmod +x scripts/vps-rollback-ghcr.sh
+            export GHCR_USERNAME="${{ secrets.VPS_GHCR_USERNAME }}"
+            export GHCR_TOKEN="${{ secrets.VPS_GHCR_TOKEN }}"
+            export REGISTRY_HOST="${{ secrets.REGISTRY_HOST || 'ghcr.io' }}"
+            export REGISTRY_ORG="${{ secrets.REGISTRY_ORG }}"
+            export ENVIRONMENT="${{ github.event.inputs.environment }}"
+            export ENV_FILE
+            export TARGET_DIR
+            export ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
+            bash scripts/vps-rollback-ghcr.sh
