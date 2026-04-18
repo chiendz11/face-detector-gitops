@@ -35,7 +35,7 @@ jobs:
       - name: Tag and push staging images
         env:
           IMAGE_HOST: ${{ secrets.REGISTRY_HOST || 'ghcr.io' }}
-          IMAGE_ORG: ${{ secrets.REGISTRY_ORG }}
+          IMAGE_ORG: ${{ github.repository_owner }}
           SHA_TAG: ${{ github.sha }}
         run: |
           TAG=staging
@@ -100,7 +100,7 @@ jobs:
             export GHCR_USERNAME="${{ secrets.VPS_GHCR_USERNAME }}"
             export GHCR_TOKEN="${{ secrets.VPS_GHCR_TOKEN }}"
             export REGISTRY_HOST="${{ secrets.REGISTRY_HOST || 'ghcr.io' }}"
-            export REGISTRY_ORG="${{ secrets.REGISTRY_ORG }}"
+            export REGISTRY_ORG="${{ github.repository_owner }}"
             export IMAGE_TAG="staging"
             export ENVIRONMENT="staging"
             export ENV_FILE=".env.staging"
