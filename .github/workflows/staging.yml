@@ -29,8 +29,8 @@ jobs:
         uses: docker/login-action@v2
         with:
           registry: ${{ secrets.REGISTRY_HOST || 'ghcr.io' }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.VPS_GHCR_USERNAME }}
+          password: ${{ secrets.VPS_GHCR_TOKEN }}
 
       - name: Tag and push staging images
         env:
