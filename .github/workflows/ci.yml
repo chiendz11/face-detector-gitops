@@ -1,3 +1,4 @@
+# Re-run after merge to verify full pipeline
 name: CI Pipeline
 
 on:
