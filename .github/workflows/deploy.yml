@@ -1,15 +1,20 @@
-name: Deploy VPS Services
+name: Canary / Production Deploy
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "backend/**"
-      - "frontend-admin/**"
-      - "nginx/**"
-      - "docker-compose.yml"
-      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+    inputs:
+      deployment_type:
+        description: 'Deployment type to run'
+        required: true
+        default: canary
+        type: choice
+        options:
+          - canary
+          - production
+      image_tag:
+        description: 'Container image tag to deploy'
+        required: true
+        default: latest
 
 jobs:
   deploy:
@@ -18,22 +23,56 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Copy deployable services to VPS
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Install AWS CLI
+        run: |
+          python3 -m pip install --upgrade awscli
+
+      - name: Generate production .env from AWS SSM
+        run: |
+          chmod +x scripts/generate-env-from-ssm.sh
+          export ENVIRONMENT=production
+          export OUTPUT_FILE=.env.production
+          export PARAM_PREFIX=/facedetector/production
+          bash scripts/generate-env-from-ssm.sh
+
+      - name: Copy production deploy files to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: "backend,frontend-admin,nginx,docker-compose.yml,.env.example"
-          target: "/opt/face-detector"
+          source: "nginx,docker-compose.ghcr.yml,scripts,.env.production"
+          target: "/home/ubuntu/face-detector"
 
-      - name: Restart backend, admin, and nginx
+      - name: Execute deployment on VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            cd /opt/face-detector
-            cp .env.example .env || true
-            docker compose up -d --build --remove-orphans backend worker frontend-admin nginx
+            if [ "${{ github.event.inputs.deployment_type }}" = "canary" ]; then
+              TARGET_DIR=/home/ubuntu/face-detector-canary
+            else
+              TARGET_DIR=/home/ubuntu/face-detector
+            fi
+            mkdir -p "$TARGET_DIR"
+            cd "$TARGET_DIR"
+            chmod +x scripts/vps-deploy-ghcr.sh
+            export GHCR_USERNAME="${{ secrets.VPS_GHCR_USERNAME }}"
+            export GHCR_TOKEN="${{ secrets.VPS_GHCR_TOKEN }}"
+            export REGISTRY_HOST="${{ secrets.REGISTRY_HOST || 'ghcr.io' }}"
+            export REGISTRY_ORG="${{ secrets.REGISTRY_ORG }}"
+            export IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+            export ENVIRONMENT="production"
+            export ENV_FILE=".env.production"
+            export TARGET_DIR
+            bash scripts/vps-deploy-ghcr.sh
+            bash scripts/vps-healthcheck.sh
