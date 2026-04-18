@@ -329,9 +329,9 @@ works correctly.
 
 ### Do you need backup?
 
+<<<<<<< HEAD
 Yes. Minimum practical backup plan for this repo is:
 
-- Postgres daily dump / WAL archive for the relational data and pgvector embeddings
 - if using local Qdrant for development, schedule Qdrant snapshots or back up the `qdrant_data` volume
 - AWS S3 for raw employee images and snapshots, so image backups live outside the VPS
 - store backup artifacts outside the VPS whenever possible, such as pushing dumps to S3 or another storage host
@@ -339,8 +339,8 @@ Yes. Minimum practical backup plan for this repo is:
 In the current cloud-aligned design, the production vector store is `pgvector` inside Postgres, so the embedding backup is the same as the database backup.
 
 If you keep the legacy local `vector-db` service for dev, treat it as a separate cache/secondary index and back it up with snapshots or volume copies rather than relying on it as the primary source of truth.
-
-### Do you need Kubernetes?
+=======
+Yes. Minimum practical backup plan:
 
 No, not for this scenario. It adds complexity without solving your main project
 risks.
@@ -355,6 +355,7 @@ If your goal is to maximize score with practical effort, prioritize:
 4. `Model/config versioning` with model name, version, and threshold in config
 5. `SSL/domain` via nginx and Let's Encrypt or Cloudflare
 
+<<<<<<< HEAD
 ## CI/CD Best Practices Included
 
 This repo now follows a more realistic CI/CD flow:
@@ -422,6 +423,8 @@ If you use GitHub Container Registry, you usually only need:
 
 The workflow can then authenticate with the built-in `GITHUB_TOKEN`.
 
+=======
+>>>>>>> master
 ## Important Environment Variables
 
 See `.env.example`:
