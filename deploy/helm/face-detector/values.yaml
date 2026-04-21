@@ -1,0 +1,84 @@
+envSecretName: face-detector-env
+imagePullSecrets: []
+
+backend:
+  replicaCount: 1
+  image:
+    repository: ""
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    name: backend
+    port: 8000
+
+worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ""
+    tag: latest
+    pullPolicy: IfNotPresent
+  command:
+    - celery
+    - -A
+    - app.worker.celery_app.celery_app
+    - worker
+    - --loglevel=info
+
+frontendAdmin:
+  replicaCount: 1
+  image:
+    repository: ""
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    name: frontend-admin
+    port: 80
+
+nginx:
+  replicaCount: 1
+  image:
+    repository: nginx
+    tag: 1.27-alpine
+    pullPolicy: IfNotPresent
+  service:
+    name: nginx
+    type: LoadBalancer
+    port: 80
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+
+postgres:
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  service:
+    name: db
+    port: 5432
+  persistence:
+    enabled: false
+    size: 10Gi
+
+redis:
+  image:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  service:
+    name: redis
+    port: 6379
+
+minio:
+  image:
+    repository: minio/minio
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    name: minio
+    port: 9000
+    consolePort: 9001
+  bucket: face-snapshots
+  persistence:
+    enabled: false
+    size: 20Gi

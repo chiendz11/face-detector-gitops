@@ -1,0 +1,90 @@
+{{- if .Values.postgres.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-data
+  labels:
+    app.kubernetes.io/name: face-detector
+    app.kubernetes.io/component: db
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.postgres.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.postgres.service.name }}
+  labels:
+    app.kubernetes.io/name: face-detector
+    app.kubernetes.io/component: db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: face-detector
+      app.kubernetes.io/component: db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: face-detector
+        app.kubernetes.io/component: db
+    spec:
+      containers:
+        - name: db
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.postgres.service.port }}
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.envSecretName }}
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.envSecretName }}
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.envSecretName }}
+                  key: POSTGRES_PASSWORD
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.postgres.service.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: db-data
+{{- if .Values.postgres.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: db-data
+{{- else }}
+          emptyDir: {}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.postgres.service.name }}
+  labels:
+    app.kubernetes.io/name: face-detector
+    app.kubernetes.io/component: db
+spec:
+  selector:
+    app.kubernetes.io/name: face-detector
+    app.kubernetes.io/component: db
+  ports:
+    - name: postgres
+      port: {{ .Values.postgres.service.port }}
+      targetPort: {{ .Values.postgres.service.port }}
+  type: ClusterIP

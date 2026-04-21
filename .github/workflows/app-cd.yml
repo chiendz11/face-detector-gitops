@@ -1,0 +1,333 @@
+name: ArgoCD Bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to bootstrap in ArgoCD
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+      git_revision:
+        description: Git branch or revision ArgoCD should track; leave blank to use the default branch
+        required: false
+        default: ""
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+      APP_NAMESPACE: facedetector
+      ARGOCD_NAMESPACE: argocd
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve bootstrap context
+        id: context
+        env:
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_GIT_REVISION: ${{ github.event.inputs.git_revision }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
+          PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
+        run: |
+          if [ "$INPUT_ENVIRONMENT" = "production" ]; then
+            echo "cluster_name=$PRODUCTION_CLUSTER_NAME" >> "$GITHUB_OUTPUT"
+            echo "param_prefix=/facedetector/production" >> "$GITHUB_OUTPUT"
+            echo "tf_environment=production" >> "$GITHUB_OUTPUT"
+            echo "application_template=deploy/argocd/production-application.yaml.tpl" >> "$GITHUB_OUTPUT"
+            echo "values_file=deploy/helm/face-detector/values-production.yaml" >> "$GITHUB_OUTPUT"
+          else
+            echo "cluster_name=$STAGING_CLUSTER_NAME" >> "$GITHUB_OUTPUT"
+            echo "param_prefix=/facedetector/staging" >> "$GITHUB_OUTPUT"
+            echo "tf_environment=staging" >> "$GITHUB_OUTPUT"
+            echo "application_template=deploy/argocd/staging-application.yaml.tpl" >> "$GITHUB_OUTPUT"
+            echo "values_file=deploy/helm/face-detector/values-staging.yaml" >> "$GITHUB_OUTPUT"
+          fi
+
+          TARGET_REVISION="$INPUT_GIT_REVISION"
+          if [ -z "$TARGET_REVISION" ]; then
+            TARGET_REVISION="$DEFAULT_BRANCH"
+          fi
+          echo "target_revision=$TARGET_REVISION" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Check whether EKS is running
+        id: cluster
+        env:
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+        run: |
+          if aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip when infrastructure is offline
+        if: steps.cluster.outputs.exists != 'true'
+        env:
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+        run: echo "EKS cluster $CLUSTER_NAME is not running. Skipping bootstrap."
+
+      - name: Verify promoted image tags exist in Git
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          VALUES_FILE: ${{ steps.context.outputs.values_file }}
+          ENVIRONMENT: ${{ steps.context.outputs.tf_environment }}
+        run: |
+          if grep -q 'tag: latest' "$VALUES_FILE"; then
+            echo "${ENVIRONMENT} values still contain the placeholder tag 'latest'." >&2
+            echo "Run the GitOps promotion workflow first so Git contains immutable image tags." >&2
+            exit 1
+          fi
+
+      - name: Set up Terraform
+        if: steps.cluster.outputs.exists == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Materialize backend runtime env file
+        if: steps.cluster.outputs.exists == 'true'
+        id: runtime-env
+        env:
+          ENVIRONMENT: ${{ steps.context.outputs.tf_environment }}
+          STAGING_BACKEND_ENV_FILE: ${{ secrets.STAGING_BACKEND_ENV_FILE }}
+          PRODUCTION_BACKEND_ENV_FILE: ${{ secrets.PRODUCTION_BACKEND_ENV_FILE }}
+        run: |
+          TEMPLATE_PATH="$GITHUB_WORKSPACE/deploy/runtime/backend.${ENVIRONMENT}.env.example"
+          OUTPUT_PATH="$RUNNER_TEMP/backend-runtime.${ENVIRONMENT}.env"
+
+          if [ "$ENVIRONMENT" = "production" ]; then
+            ENV_CONTENT="$PRODUCTION_BACKEND_ENV_FILE"
+          else
+            ENV_CONTENT="$STAGING_BACKEND_ENV_FILE"
+          fi
+
+          if [ -n "$ENV_CONTENT" ]; then
+            printf '%s\n' "$ENV_CONTENT" > "$OUTPUT_PATH"
+            echo "env_file_path=$OUTPUT_PATH" >> "$GITHUB_OUTPUT"
+            echo "Using backend runtime env from GitHub secret for $ENVIRONMENT."
+          else
+            echo "env_file_path=$TEMPLATE_PATH" >> "$GITHUB_OUTPUT"
+            echo "No secret-backed runtime env provided for $ENVIRONMENT. Falling back to committed template." >&2
+          fi
+
+      - name: Sync SSM parameters from backend runtime env file
+        if: steps.cluster.outputs.exists == 'true'
+        working-directory: terraform/ssm
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_environment: ${{ steps.context.outputs.tf_environment }}
+          TF_VAR_env_file_path: ${{ steps.runtime-env.outputs.env_file_path }}
+          TF_VAR_kms_key_id: ${{ vars.SSM_KMS_KEY_ID || '' }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=ssm/${TF_VAR_environment}.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+          terraform apply -auto-approve -input=false
+
+      - name: Generate runtime env file from SSM
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          ENVIRONMENT: ${{ steps.context.outputs.tf_environment }}
+          OUTPUT_FILE: .env.runtime
+          PARAM_PREFIX: ${{ steps.context.outputs.param_prefix }}
+        run: |
+          chmod +x scripts/generate-env-from-ssm.sh
+          bash scripts/generate-env-from-ssm.sh
+
+      - name: Resolve GHCR image repositories
+        if: steps.cluster.outputs.exists == 'true'
+        id: image-meta
+        run: |
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          echo "backend=ghcr.io/${OWNER}/face-detector-backend" >> "$GITHUB_OUTPUT"
+          echo "frontend=ghcr.io/${OWNER}/face-detector-admin" >> "$GITHUB_OUTPUT"
+
+      - name: Install kubectl and gettext
+        if: steps.cluster.outputs.exists == 'true'
+        run: |
+          curl -sSL -o kubectl "https://dl.k8s.io/release/v1.30.1/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          sudo apt-get update
+          sudo apt-get install -y gettext-base
+
+      - name: Configure kubeconfig
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Wait for ArgoCD control plane
+        if: steps.cluster.outputs.exists == 'true'
+        run: kubectl wait --namespace "$ARGOCD_NAMESPACE" --for=condition=available deployment/argocd-server --timeout=10m
+
+      - name: Configure ArgoCD repository credentials
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          ARGOCD_REPO_USERNAME: ${{ secrets.ARGOCD_REPO_USERNAME }}
+          ARGOCD_REPO_TOKEN: ${{ secrets.ARGOCD_REPO_TOKEN }}
+        run: |
+          if [ -z "$ARGOCD_REPO_TOKEN" ]; then
+            echo "ARGOCD_REPO_TOKEN is not set. Assuming the repository is public."
+            exit 0
+          fi
+
+          REPO_USERNAME="$ARGOCD_REPO_USERNAME"
+          if [ -z "$REPO_USERNAME" ]; then
+            REPO_USERNAME="git"
+          fi
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: repo-face-detector
+            namespace: ${ARGOCD_NAMESPACE}
+            labels:
+              argocd.argoproj.io/secret-type: repository
+          stringData:
+            type: git
+            url: https://github.com/${GITHUB_REPOSITORY}.git
+            username: ${REPO_USERNAME}
+            password: ${ARGOCD_REPO_TOKEN}
+          EOF
+
+      - name: Ensure application namespace exists
+        if: steps.cluster.outputs.exists == 'true'
+        run: kubectl create namespace "$APP_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Configure GHCR image pull secret
+        if: steps.cluster.outputs.exists == 'true'
+        id: ghcr-auth
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          if [ -z "$GHCR_TOKEN" ]; then
+            echo "parameter_block=" >> "$GITHUB_OUTPUT"
+            echo "GHCR_TOKEN is not set. Assuming GHCR images are public."
+            exit 0
+          fi
+
+          REGISTRY_USERNAME="$GHCR_USERNAME"
+          if [ -z "$REGISTRY_USERNAME" ]; then
+            REGISTRY_USERNAME="$GITHUB_REPOSITORY_OWNER"
+          fi
+
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --namespace "$APP_NAMESPACE" \
+            --docker-server=ghcr.io \
+            --docker-username="$REGISTRY_USERNAME" \
+            --docker-password="$GHCR_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          {
+            echo "parameter_block<<EOF"
+            echo "        - name: imagePullSecrets[0].name"
+            echo "          value: ghcr-pull-secret"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create bootstrap application secret
+        if: steps.cluster.outputs.exists == 'true'
+        run: |
+          kubectl create secret generic face-detector-env \
+            --namespace "$APP_NAMESPACE" \
+            --from-env-file=.env.runtime \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply ArgoCD application
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          APPLICATION_TEMPLATE: ${{ steps.context.outputs.application_template }}
+          TARGET_REVISION: ${{ steps.context.outputs.target_revision }}
+          BACKEND_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.backend }}
+          FRONTEND_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.frontend }}
+          IMAGE_PULL_SECRET_PARAMETER: ${{ steps.ghcr-auth.outputs.parameter_block }}
+        run: envsubst < "$APPLICATION_TEMPLATE" | kubectl apply -f -
+
+      - name: Wait for application rollout
+        if: steps.cluster.outputs.exists == 'true'
+        run: |
+          for deployment in db redis minio backend frontend-admin nginx; do
+            for _ in $(seq 1 30); do
+              if kubectl get deployment/${deployment} --namespace "$APP_NAMESPACE" >/dev/null 2>&1; then
+                break
+              fi
+              sleep 10
+            done
+          done
+          for deployment in db redis minio backend frontend-admin nginx; do
+            kubectl rollout status deployment/${deployment} --namespace "$APP_NAMESPACE" --timeout=10m
+          done
+          kubectl rollout status deployment/worker --namespace "$APP_NAMESPACE" --timeout=10m || true
+
+      - name: Wait for public load balancer hostname
+        if: steps.cluster.outputs.exists == 'true'
+        id: public-host
+        run: |
+          HOSTNAME=""
+          for _ in $(seq 1 30); do
+            HOSTNAME=$(kubectl get service nginx --namespace "$APP_NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            if [ -n "$HOSTNAME" ]; then
+              break
+            fi
+            sleep 20
+          done
+          echo "hostname=${HOSTNAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Update runtime secret with public endpoints
+        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        env:
+          PUBLIC_HOST: ${{ steps.public-host.outputs.hostname }}
+        run: |
+          python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path('.env.runtime')
+values = {}
+for line in path.read_text(encoding='utf-8').splitlines():
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#') or '=' not in stripped:
+        continue
+    key, value = stripped.split('=', 1)
+    values[key] = value
+
+          public_url = f"http://{os.environ['PUBLIC_HOST']}"
+          values['MINIO_PUBLIC_ENDPOINT'] = public_url
+
+with path.open('w', encoding='utf-8') as handle:
+    for key in sorted(values):
+        handle.write(f"{key}={values[key]}\n")
+PY
+          kubectl create secret generic face-detector-env \
+            --namespace "$APP_NAMESPACE" \
+            --from-env-file=.env.runtime \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl rollout restart deployment/backend --namespace "$APP_NAMESPACE"
+          kubectl rollout restart deployment/worker --namespace "$APP_NAMESPACE" || true
+
+      - name: Show public URL
+        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        run: echo "Application available at http://${{ steps.public-host.outputs.hostname }}/admin/"

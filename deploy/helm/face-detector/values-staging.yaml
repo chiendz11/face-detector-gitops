@@ -1,0 +1,11 @@
+backend:
+  image:
+    tag: latest
+
+worker:
+  image:
+    tag: latest
+
+frontendAdmin:
+  image:
+    tag: latest

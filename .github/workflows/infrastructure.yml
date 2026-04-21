@@ -1,0 +1,120 @@
+name: Infrastructure Management
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+      action:
+        description: Terraform action to run
+        required: true
+        default: apply
+        type: choice
+        options:
+          - apply
+          - destroy
+      cluster_name:
+        description: Optional EKS cluster name override
+        required: false
+        default: ""
+      snapshot_bucket_name:
+        description: Optional S3 bucket name override for archived snapshots
+        required: false
+        default: ""
+
+jobs:
+  infrastructure:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Resolve infrastructure context
+        id: context
+        env:
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+          INPUT_SNAPSHOT_BUCKET_NAME: ${{ github.event.inputs.snapshot_bucket_name }}
+          STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
+          PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
+          STAGING_SNAPSHOT_BUCKET_NAME: ${{ vars.STAGING_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-staging' }}
+          PRODUCTION_SNAPSHOT_BUCKET_NAME: ${{ vars.PRODUCTION_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-production' }}
+        run: |
+          if [ "$INPUT_ENVIRONMENT" = "production" ]; then
+            DEFAULT_CLUSTER_NAME="$PRODUCTION_CLUSTER_NAME"
+            DEFAULT_SNAPSHOT_BUCKET_NAME="$PRODUCTION_SNAPSHOT_BUCKET_NAME"
+          else
+            DEFAULT_CLUSTER_NAME="$STAGING_CLUSTER_NAME"
+            DEFAULT_SNAPSHOT_BUCKET_NAME="$STAGING_SNAPSHOT_BUCKET_NAME"
+          fi
+
+          CLUSTER_NAME="$INPUT_CLUSTER_NAME"
+          if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME="$DEFAULT_CLUSTER_NAME"
+          fi
+
+          SNAPSHOT_BUCKET_NAME="$INPUT_SNAPSHOT_BUCKET_NAME"
+          if [ -z "$SNAPSHOT_BUCKET_NAME" ]; then
+            SNAPSHOT_BUCKET_NAME="$DEFAULT_SNAPSHOT_BUCKET_NAME"
+          fi
+
+          echo "cluster_name=$CLUSTER_NAME" >> "$GITHUB_OUTPUT"
+          echo "snapshot_bucket_name=$SNAPSHOT_BUCKET_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Terraform init
+        working-directory: terraform/eks
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=eks/${TF_VAR_cluster_name}.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: Terraform apply
+        if: github.event.inputs.action == 'apply'
+        working-directory: terraform/eks
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
+        run: terraform apply -auto-approve -input=false
+
+      - name: Show infrastructure outputs
+        if: github.event.inputs.action == 'apply'
+        working-directory: terraform/eks
+        run: terraform output
+
+      - name: Terraform destroy
+        if: github.event.inputs.action == 'destroy'
+        working-directory: terraform/eks
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
+        run: terraform destroy -auto-approve -input=false
