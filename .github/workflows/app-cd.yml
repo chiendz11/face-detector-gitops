@@ -23,6 +23,7 @@ jobs:
       contents: read
     env:
       AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+      TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
       APP_NAMESPACE: facedetector
       ARGOCD_NAMESPACE: argocd
     steps:
@@ -121,12 +122,133 @@ jobs:
 
           if [ -n "$ENV_CONTENT" ]; then
             printf '%s\n' "$ENV_CONTENT" > "$OUTPUT_PATH"
-            echo "env_file_path=$OUTPUT_PATH" >> "$GITHUB_OUTPUT"
             echo "Using backend runtime env from GitHub secret for $ENVIRONMENT."
           else
-            echo "env_file_path=$TEMPLATE_PATH" >> "$GITHUB_OUTPUT"
+            cat "$TEMPLATE_PATH" > "$OUTPUT_PATH"
             echo "No secret-backed runtime env provided for $ENVIRONMENT. Falling back to committed template." >&2
           fi
+
+          echo "env_file_path=$OUTPUT_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Extract managed service credentials from backend runtime env file
+        if: steps.cluster.outputs.exists == 'true'
+        id: runtime-contract
+        env:
+          ENV_FILE_PATH: ${{ steps.runtime-env.outputs.env_file_path }}
+        run: |
+          python3 - "$ENV_FILE_PATH" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          entries = {}
+
+          for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+              line = raw_line.strip()
+              if not line or line.startswith("#") or "=" not in raw_line:
+                  continue
+              key, value = raw_line.split("=", 1)
+              entries[key.strip()] = value.strip()
+
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
+          with github_output.open("a", encoding="utf-8") as handle:
+              for key, value in {
+                  "db_name": entries.get("POSTGRES_DB", ""),
+                  "db_username": entries.get("POSTGRES_USER", ""),
+                  "db_password": entries.get("POSTGRES_PASSWORD", ""),
+                  "redis_auth_token": entries.get("REDIS_PASSWORD", ""),
+              }.items():
+                  handle.write(f"{key}<<EOF\n{value}\nEOF\n")
+          PY
+
+      - name: Inject managed infrastructure endpoints into backend runtime env file
+        if: steps.cluster.outputs.exists == 'true'
+        working-directory: terraform/eks
+        env:
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          ENVIRONMENT: ${{ steps.context.outputs.tf_environment }}
+          ENV_FILE_PATH: ${{ steps.runtime-env.outputs.env_file_path }}
+          TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
+          TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
+          TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
+          TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
+        run: |
+          export TF_VAR_deployment_environment="$ENVIRONMENT"
+          export TF_VAR_cluster_name="$CLUSTER_NAME"
+
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=eks/${CLUSTER_NAME}.tfstate" \
+            -backend-config="region=${TF_STATE_REGION}"
+
+          terraform output -json > "$RUNNER_TEMP/eks-outputs.json"
+
+          python3 - "$ENV_FILE_PATH" "$RUNNER_TEMP/eks-outputs.json" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from urllib.parse import quote
+
+          env_path = Path(sys.argv[1])
+          outputs_path = Path(sys.argv[2])
+          outputs = json.loads(outputs_path.read_text(encoding="utf-8"))
+
+          def output_value(name: str) -> str:
+              value = outputs.get(name, {}).get("value")
+              return "" if value is None else str(value)
+
+          lines = env_path.read_text(encoding="utf-8").splitlines()
+          ordered_keys = []
+          entries = {}
+
+          for raw_line in lines:
+              if "=" not in raw_line or raw_line.lstrip().startswith("#"):
+                  continue
+              key, value = raw_line.split("=", 1)
+              key = key.strip()
+              if key not in ordered_keys:
+                  ordered_keys.append(key)
+              entries[key] = value.strip()
+
+          db_user = output_value("database_username") or entries.get("POSTGRES_USER", "")
+          db_name = output_value("database_name") or entries.get("POSTGRES_DB", "")
+          db_password = entries.get("POSTGRES_PASSWORD", "")
+          db_endpoint = output_value("database_endpoint")
+          db_port = output_value("database_port") or "5432"
+          redis_password = entries.get("REDIS_PASSWORD", "")
+          redis_endpoint = output_value("redis_primary_endpoint")
+          redis_port = output_value("redis_port") or "6379"
+          snapshot_bucket = output_value("snapshot_bucket_name")
+
+          entries["POSTGRES_USER"] = db_user
+          entries["POSTGRES_DB"] = db_name
+          entries["DATABASE_REPLICA_URLS"] = ""
+          entries["AWS_S3_REGION"] = os.environ["AWS_REGION"]
+
+          if db_endpoint:
+              encoded_user = quote(db_user, safe="")
+              encoded_password = quote(db_password, safe="")
+              encoded_db_name = quote(db_name, safe="")
+              entries["DATABASE_URL"] = (
+                  f"postgresql+psycopg://{encoded_user}:{encoded_password}@{db_endpoint}:{db_port}/{encoded_db_name}"
+              )
+
+          if redis_endpoint:
+              encoded_redis_password = quote(redis_password, safe="")
+              entries["REDIS_ADDRESS"] = f"{redis_endpoint}:{redis_port}"
+              entries["REDIS_URL"] = f"rediss://:{encoded_redis_password}@{redis_endpoint}:{redis_port}/0"
+
+          if snapshot_bucket:
+              entries["AWS_S3_BUCKET"] = snapshot_bucket
+
+          missing_order = [key for key in entries if key not in ordered_keys]
+          with env_path.open("w", encoding="utf-8") as handle:
+              for key in ordered_keys + missing_order:
+                  handle.write(f"{key}={entries[key]}\n")
+          PY
 
       - name: Sync SSM parameters from backend runtime env file
         if: steps.cluster.outputs.exists == 'true'
@@ -141,7 +263,7 @@ jobs:
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
             -backend-config="key=ssm/${TF_VAR_environment}.tfstate" \
-            -backend-config="region=${AWS_REGION}"
+            -backend-config="region=${TF_STATE_REGION}"
           terraform apply -auto-approve -input=false
 
       - name: Generate runtime env file from SSM
@@ -269,7 +391,7 @@ jobs:
       - name: Wait for application rollout
         if: steps.cluster.outputs.exists == 'true'
         run: |
-          for deployment in db redis minio backend frontend-admin nginx; do
+          for deployment in backend frontend-admin nginx; do
             for _ in $(seq 1 30); do
               if kubectl get deployment/${deployment} --namespace "$APP_NAMESPACE" >/dev/null 2>&1; then
                 break
@@ -277,7 +399,7 @@ jobs:
               sleep 10
             done
           done
-          for deployment in db redis minio backend frontend-admin nginx; do
+          for deployment in backend frontend-admin nginx; do
             kubectl rollout status deployment/${deployment} --namespace "$APP_NAMESPACE" --timeout=10m
           done
           kubectl rollout status deployment/worker --namespace "$APP_NAMESPACE" --timeout=10m || true
@@ -295,38 +417,6 @@ jobs:
             sleep 20
           done
           echo "hostname=${HOSTNAME}" >> "$GITHUB_OUTPUT"
-
-      - name: Update runtime secret with public endpoints
-        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
-        env:
-          PUBLIC_HOST: ${{ steps.public-host.outputs.hostname }}
-        run: |
-          python3 - <<'PY'
-import os
-from pathlib import Path
-
-path = Path('.env.runtime')
-values = {}
-for line in path.read_text(encoding='utf-8').splitlines():
-    stripped = line.strip()
-    if not stripped or stripped.startswith('#') or '=' not in stripped:
-        continue
-    key, value = stripped.split('=', 1)
-    values[key] = value
-
-          public_url = f"http://{os.environ['PUBLIC_HOST']}"
-          values['MINIO_PUBLIC_ENDPOINT'] = public_url
-
-with path.open('w', encoding='utf-8') as handle:
-    for key in sorted(values):
-        handle.write(f"{key}={values[key]}\n")
-PY
-          kubectl create secret generic face-detector-env \
-            --namespace "$APP_NAMESPACE" \
-            --from-env-file=.env.runtime \
-            --dry-run=client -o yaml | kubectl apply -f -
-          kubectl rollout restart deployment/backend --namespace "$APP_NAMESPACE"
-          kubectl rollout restart deployment/worker --namespace "$APP_NAMESPACE" || true
 
       - name: Show public URL
         if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''

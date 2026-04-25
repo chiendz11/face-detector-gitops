@@ -10,6 +10,18 @@ backend:
   service:
     name: backend
     port: 8000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
 
 worker:
   enabled: true
@@ -24,6 +36,29 @@ worker:
     - app.worker.celery_app.celery_app
     - worker
     - --loglevel=info
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  autoscaling:
+    keda:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 5
+      pollingIntervalSeconds: 30
+      cooldownPeriodSeconds: 300
+      queue:
+        listName: default
+        targetLength: 5
+        activationLength: 1
+        databaseIndex: 0
+        enableTLS: false
+        addressEnvName: REDIS_ADDRESS
+        usernameEnvName: ""
+        passwordEnvName: REDIS_PASSWORD
 
 frontendAdmin:
   replicaCount: 1
@@ -47,38 +82,3 @@ nginx:
     port: 80
     annotations:
       service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
-
-postgres:
-  image:
-    repository: postgres
-    tag: "16-alpine"
-    pullPolicy: IfNotPresent
-  service:
-    name: db
-    port: 5432
-  persistence:
-    enabled: false
-    size: 10Gi
-
-redis:
-  image:
-    repository: redis
-    tag: 7-alpine
-    pullPolicy: IfNotPresent
-  service:
-    name: redis
-    port: 6379
-
-minio:
-  image:
-    repository: minio/minio
-    tag: latest
-    pullPolicy: IfNotPresent
-  service:
-    name: minio
-    port: 9000
-    consolePort: 9001
-  bucket: face-snapshots
-  persistence:
-    enabled: false
-    size: 20Gi

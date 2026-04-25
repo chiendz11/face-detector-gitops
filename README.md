@@ -31,15 +31,22 @@ platform footprint. The real challenges are:
 - reliable audit logging
 - backup and recoverability
 
-A single small environment is often enough for:
+A single small local environment is often enough for:
 
 - backend API
 - worker
 - Postgres
-- Qdrant
 - MinIO
 - Redis
 - nginx
+
+For AWS staging and production, the practical target is different:
+
+- EKS runs only stateless workloads such as `backend`, `worker`, `frontend-admin`, and `nginx`
+- PostgreSQL lives outside the cluster
+- Redis or Valkey lives outside the cluster
+- Amazon S3 is the primary object store
+- autoscaling happens on stateless pods, not on data stores inside Kubernetes
 
 ## Runtime Topology
 
@@ -48,8 +55,8 @@ A single small environment is often enough for:
 - `nginx` listens on port `80`
 - `/admin/` routes to `frontend-admin`
 - `/api/` routes to `backend`
-- `backend` talks to Postgres, Qdrant, MinIO, and Redis
-- `worker` runs background jobs such as re-indexing or batch enrollment
+- `backend` talks to external PostgreSQL, external Redis or Valkey, and S3
+- `worker` consumes async jobs from external Redis or Valkey and can scale independently from the API
 
 ### Edge side
 
@@ -57,6 +64,14 @@ A single small environment is often enough for:
 - faces are detected and cropped before upload
 - crops are sent to `POST /api/vision/recognize`
 - the kiosk UI confirms pass, fail, or retry
+
+## Camera And Event Flow
+
+- camera and raw video stay on the edge device in the current design
+- the edge client detects faces locally and uploads only cropped JPEG payloads to the backend over HTTP
+- `Redis` and `Celery` are the current async event mechanism for background work such as re-indexing or batch jobs
+- there is intentionally no centralized video streaming pipeline or Kafka event bus yet, because the current workload does not need multi-consumer replayable event streams
+- revisit centralized streaming only when many cameras, centralized live monitoring, or multiple downstream event consumers justify the extra platform cost
 
 ## Current Structure
 
@@ -105,7 +120,6 @@ This starts:
 - `frontend-admin`
 - `nginx`
 - `db`
-- `vector-db`
 - `minio`
 - `redis`
 
@@ -135,6 +149,21 @@ The current preferred runtime model is:
 
 The repository keeps the application state in Git and the runtime secrets in SSM, while GitHub Actions bridges the two.
 
+## Staging and Production Shape
+
+| Component | Staging | Production |
+| --- | --- | --- |
+| Compute | EKS, typically 1-2 nodes with reactive headroom | EKS |
+| API | HPA, typically 1 -> 3 pods | HPA, typically 2 -> 20 pods |
+| Worker | KEDA, typically 1 -> 3 pods | KEDA, production envelope |
+| Database | small RDS PostgreSQL | RDS PostgreSQL Multi-AZ |
+| Queue | external Redis or Valkey | external Redis or Valkey with HA |
+| Storage | S3 | S3 |
+| Edge AI | fake or replayed data | real edge devices |
+| Complexity | production-like behavior at low scale | higher |
+
+This repository currently keeps staging and production on the same GitOps + EKS toolchain so promotion, ArgoCD, and runtime secrets behave the same. If you later collapse staging to ECS or EC2, keep the same external `DATABASE_URL`, `REDIS_URL`, and `AWS_S3_BUCKET` contract.
+
 ## Cost-saving workflow
 
 The recommended student/lab workflow is:
@@ -146,12 +175,12 @@ The recommended student/lab workflow is:
 5. run `ArgoCD Bootstrap` whenever a cluster is recreated or brought back online so SSM values, runtime secrets, and the correct environment-specific ArgoCD Application are seeded into that cluster
 6. run `Infrastructure Management` with `destroy` when you are done for the day
 
-This keeps the expensive EKS control plane and worker nodes off when you are not actively using them.
+This keeps the expensive EKS environment disposable without forcing stateful data stores back into the cluster. That is a lab cost-control choice, not the application elasticity model: while a cluster is running, scaling should be reactive through HPA, KEDA, and cluster-autoscaler rather than driven by a business-hours schedule.
 
 ## Terraform layout
 
 - `terraform/bootstrap`: one-time remote-state bootstrap for the S3 state bucket and DynamoDB lock table
-- `terraform/eks`: EKS, VPC, S3 snapshot bucket, namespaces, and ArgoCD installation
+- `terraform/eks`: EKS, VPC, private data subnets, managed PostgreSQL, managed Redis, S3 snapshot bucket, namespaces, ArgoCD, metrics-server, KEDA, and cluster-autoscaler defaults for both staging and production
 - `terraform/ssm`: sync backend runtime env files into `/facedetector/<environment>/...`
 
 > The `terraform/eks` and `terraform/ssm` modules are configured for an S3 remote backend. Create the backend bucket and lock table once with `terraform/bootstrap`, then use those names as `TF_STATE_BUCKET` and `TF_STATE_LOCK_TABLE` in GitHub secrets.
@@ -165,6 +194,7 @@ Required GitHub secrets for the new flow:
 - `AWS_REGION` (optional; defaults to `ap-southeast-1`)
 - `TF_STATE_BUCKET`
 - `TF_STATE_LOCK_TABLE`
+- `TF_STATE_REGION` (optional; defaults to `AWS_REGION`, but set it explicitly when the Terraform state bucket lives in another region)
 - `STAGING_BACKEND_ENV_FILE` (optional but recommended; multiline backend runtime env file for staging)
 - `PRODUCTION_BACKEND_ENV_FILE` (optional but recommended; multiline backend runtime env file for production)
 - `ARGOCD_REPO_USERNAME` (optional; needed when the GitHub repository is private)
@@ -174,6 +204,10 @@ Required GitHub secrets for the new flow:
 
 If `STAGING_BACKEND_ENV_FILE` or `PRODUCTION_BACKEND_ENV_FILE` is not set, `ArgoCD Bootstrap` falls back to the committed template under `deploy/runtime/`. For real staging or production deployments, prefer the secret-backed env file so runtime values do not live in Git.
 
+Terraform state does not have to live in the same region as the deployed infrastructure. When the backend bucket and lock table are in a different region, set `TF_STATE_REGION` so workflow `terraform init` can reach the correct S3 and DynamoDB backend while `AWS_REGION` still points at the target workload region.
+
+`Infrastructure Management` now reads `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `REDIS_PASSWORD` from that same environment contract so the managed RDS and Redis resources use the same credentials as the application.
+
 The backend runtime templates in `deploy/runtime/` are also the canonical copy-paste starting point for `STAGING_BACKEND_ENV_FILE` and `PRODUCTION_BACKEND_ENV_FILE`.
 
 Recommended repository variables for the two-cluster setup:
@@ -182,6 +216,8 @@ Recommended repository variables for the two-cluster setup:
 - `PRODUCTION_EKS_CLUSTER_NAME` (optional; defaults to `face-detector-production`)
 - `STAGING_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-staging`)
 - `PRODUCTION_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-production`)
+- `STAGING_NODE_INSTANCE_TYPE`, `STAGING_NODE_MIN_SIZE`, `STAGING_NODE_MAX_SIZE`, `STAGING_NODE_DESIRED_SIZE` (optional; default to a small reactive-scaling staging envelope with 1 desired node and up to 2 nodes)
+- `PRODUCTION_NODE_INSTANCE_TYPE`, `PRODUCTION_NODE_MIN_SIZE`, `PRODUCTION_NODE_MAX_SIZE`, `PRODUCTION_NODE_DESIRED_SIZE` (optional; default to a larger production node group envelope)
 - `SSM_KMS_KEY_ID` (optional; customer-managed KMS key for SSM `SecureString` parameters)
 
 The active workflows are:
@@ -196,25 +232,25 @@ The promotion workflows commit with `[skip ci]` so GitOps config updates do not 
 
 There is intentionally no per-PR preview environment in this setup. For a solo workflow, local validation plus on-demand EKS bring-up is cheaper and simpler than creating temporary namespaces or releases for every pull request.
 
-## Runtime mapping on EKS
+## Runtime Mapping on EKS
 
-- `backend`, `worker`, `frontend-admin`, `nginx`, `db`, `redis`, and `minio` are deployed by the Helm chart under `deploy/helm/face-detector`
+- `backend`, `worker`, `frontend-admin`, and `nginx` are deployed by the Helm chart under `deploy/helm/face-detector`
+- PostgreSQL, Redis or Valkey, and S3 stay external to the cluster
 - staging tracks `deploy/helm/face-detector/values-staging.yaml` through `deploy/argocd/staging-application.yaml.tpl`
 - production tracks `deploy/helm/face-detector/values-production.yaml` through `deploy/argocd/production-application.yaml.tpl`
-- `nginx` remains the single public entry point and proxies `/api/`, `/admin/`, and snapshot traffic
-- the Kubernetes secret `face-detector-env` is generated from SSM during `ArgoCD Bootstrap`, with SSM values sourced from the secret-backed backend env file when provided
+- `nginx` remains the single public entry point and proxies `/api/` and `/admin/`
+- the Kubernetes secret `face-detector-env` is generated from SSM during `ArgoCD Bootstrap`, with SSM values sourced from the secret-backed backend env file and then patched with Terraform-managed endpoints when provided
 - SSM runtime values are stored as `SecureString` by default and decrypted during bootstrap when generating `.env.runtime`
 - when `GHCR_USERNAME` and `GHCR_TOKEN` are provided, `ArgoCD Bootstrap` also creates `ghcr-pull-secret` so the cluster can pull private GHCR images
-- `MINIO_PUBLIC_ENDPOINT` is rewritten from the Kubernetes load balancer hostname after deployment
+- `metrics-server` is installed by Terraform so the backend HPA can scale on pod resource usage
+- `KEDA` is installed by Terraform in both staging and production so the worker can scale on Redis queue depth while still using a native Kubernetes HPA under the hood
+- `cluster-autoscaler` is installed by Terraform in both staging and production so node capacity can follow backend HPA and worker KEDA demand
 
-## Hybrid storage architecture (MinIO + S3)
+## Object Storage Strategy
 
-This code still supports a hybrid storage model:
-
-- MinIO stays in-cluster as the fast local object store
-- Amazon S3 stores the archived copy of snapshots for longer retention
-
-To enable hybrid mode, keep `AWS_S3_BUCKET` and `AWS_S3_REGION` set in SSM. The application will keep writing to MinIO locally while also copying objects to S3.
+- local Docker Compose uses MinIO as the development object store
+- staging and production use Amazon S3 as the primary snapshot and audit object store
+- the backend returns presigned S3 URLs in cloud environments, so Kubernetes does not have to proxy object traffic through an in-cluster MinIO service while object access stays time-limited
 
 ### Minimal IAM access pattern
 
@@ -278,7 +314,7 @@ Recommended backup components:
 - a periodic verification process that restores a backup to a staging instance
 - infrastructure and config as code so environment state can be reprovisioned
 
-For availability, use RDS Multi-AZ or read-replica endpoints in addition to backups, and configure `DATABASE_REPLICA_URLS` so read-heavy vector searches can fail over transparently.
+For availability, start with RDS Multi-AZ plus backups. Only populate `DATABASE_REPLICA_URLS` after you have a real reader endpoint and a read path that can tolerate replica lag.
 
 For `pgvector`, ensure the vector extension is installed in the restore target before importing a logical dump.
 
@@ -299,43 +335,36 @@ not another public web app. It should eventually show:
 
 Default recommendation for this repo:
 
-- keep `frontend-admin` on the VPS under `/admin/`
-- use one nginx domain
+- keep `frontend-admin` behind the same `nginx` entry point under `/admin/`
+- use one public domain and one ingress path layout
 - avoid CORS
-- keep debugging and deployment simpler
+- keep staging and production behavior simpler
 
-If you later want a more modern split deployment, only move the admin frontend
-to Vercel or Netlify. The backend and data services should still stay on the
-VPS.
+If you later move the admin frontend to a separate platform, do it only after auth, monitoring, and CORS behavior are already stable.
 
 ### Do you need cache?
 
 Yes, but keep it small:
 
-- Redis as the message queue broker
-- optional short-lived cache for system config
-- optional cooldown cache to prevent repeated recognition spam
+- use external Redis or Valkey as the Celery broker and result backend
+- keep queue and cache concerns on the same managed service only while the workload is still small
+- optional short-lived cache for system config and recognition cooldowns can live there too
+- scale workers from queue depth through KEDA instead of manually tuning deployment replicas
 
 Do not spend project time on multi-layer cache before the core recognition flow
 works correctly.
 
 ### Do you need backup?
 
-<<<<<<< HEAD
 Yes. Minimum practical backup plan for this repo is:
 
-- if using local Qdrant for development, schedule Qdrant snapshots or back up the `qdrant_data` volume
-- AWS S3 for raw employee images and snapshots, so image backups live outside the VPS
-- store backup artifacts outside the VPS whenever possible, such as pushing dumps to S3 or another storage host
+- automated RDS snapshots and point-in-time recovery
+- S3 versioning for raw snapshots and audit objects
+- periodic restore drills into a staging database
+- backup artifacts stored outside the running cluster
+- infrastructure and runtime config stored as code so the environment can be rebuilt cleanly
 
-In the current cloud-aligned design, the production vector store is `pgvector` inside Postgres, so the embedding backup is the same as the database backup.
-
-If you keep the legacy local `vector-db` service for dev, treat it as a separate cache/secondary index and back it up with snapshots or volume copies rather than relying on it as the primary source of truth.
-=======
-Yes. Minimum practical backup plan:
-
-No, not for this scenario. It adds complexity without solving your main project
-risks.
+In the current cloud-aligned design, the vector store is `pgvector` inside Postgres, so embedding durability follows the database backup strategy.
 
 ## Bonus-Point Priorities
 
@@ -446,8 +475,8 @@ architecture, but the core business features still need implementation:
 - employee CRUD
 - role and authentication management
 - actual DeepFace embedding and matching
-- snapshot upload to MinIO
-- vector indexing in Qdrant
+- production-grade snapshot upload and retention on S3
+- richer `pgvector` indexing and search behavior
 - background re-indexing jobs
 - kiosk UI richer than console output
 - tests and database migrations

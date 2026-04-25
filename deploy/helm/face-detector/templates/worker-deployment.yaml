@@ -7,7 +7,9 @@ metadata:
     app.kubernetes.io/name: face-detector
     app.kubernetes.io/component: worker
 spec:
+{{- if not .Values.worker.autoscaling.keda.enabled }}
   replicas: {{ .Values.worker.replicaCount }}
+{{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: face-detector
@@ -31,4 +33,6 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ .Values.envSecretName }}
+          resources:
+{{ toYaml .Values.worker.resources | indent 12 }}
 {{- end }}
