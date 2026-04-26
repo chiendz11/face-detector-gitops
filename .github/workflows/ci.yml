@@ -65,8 +65,11 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit
 
-      - name: Run Python dependency audit
-        run: pip-audit --progress=off
+      - name: Run backend dependency audit
+        run: pip-audit -r backend/requirements.txt --progress=off
+
+      - name: Run edge-client dependency audit
+        run: pip-audit -r edge-client/requirements.txt --progress=off
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
