@@ -1,55 +1,25 @@
-name: Infrastructure Management
+name: Terraform PR Plan
 
 on:
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: Target environment
-        required: true
-        default: sandbox
-        type: choice
-        options:
-          - sandbox
-          - staging
-          - production
-      action:
-        description: Terraform action to run
-        required: true
-        default: apply
-        type: choice
-        options:
-          - apply
-          - destroy
-      cluster_name:
-        description: Optional sandbox EKS cluster name override. Shared staging and production ignore overrides and will fail fast.
-        required: false
-        default: ""
-      snapshot_bucket_name:
-        description: Optional sandbox S3 bucket name override for archived snapshots
-        required: false
-        default: ""
-      node_instance_type:
-        description: Optional EKS node instance type override
-        required: false
-        default: ""
-      node_min_size:
-        description: Optional EKS node group minimum size override
-        required: false
-        default: ""
-      node_max_size:
-        description: Optional EKS node group maximum size override
-        required: false
-        default: ""
-      node_desired_size:
-        description: Optional EKS node group desired size override
-        required: false
-        default: ""
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - "terraform/**"
+      - "deploy/runtime/**"
+      - "scripts/resolve_workflow_context.py"
+      - ".github/workflows/infrastructure.yml"
+      - ".github/workflows/app-cd.yml"
+      - ".github/workflows/terraform-plan.yml"
 
 jobs:
-  infrastructure:
+  plan:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: write
       id-token: write
     env:
       AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
@@ -58,20 +28,12 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Resolve infrastructure context
+      - name: Resolve sandbox plan context
         id: context
         env:
-          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
-          INPUT_ACTION: ${{ github.event.inputs.action }}
-          REF_NAME: ${{ github.ref_name }}
+          REF_NAME: ${{ github.event.pull_request.head.ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REPOSITORY_ID: ${{ github.repository_id }}
-          INPUT_CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
-          INPUT_SNAPSHOT_BUCKET_NAME: ${{ github.event.inputs.snapshot_bucket_name }}
-          INPUT_NODE_INSTANCE_TYPE: ${{ github.event.inputs.node_instance_type }}
-          INPUT_NODE_MIN_SIZE: ${{ github.event.inputs.node_min_size }}
-          INPUT_NODE_MAX_SIZE: ${{ github.event.inputs.node_max_size }}
-          INPUT_NODE_DESIRED_SIZE: ${{ github.event.inputs.node_desired_size }}
           AWS_ROLE_SANDBOX_ARN: ${{ vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
           AWS_ROLE_STAGING_ARN: ${{ vars['AWS_ROLE_STAGING_ARN'] || '' }}
           AWS_ROLE_PRODUCTION_ARN: ${{ vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
@@ -95,18 +57,12 @@ jobs:
           SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
         run: |
           python3 scripts/resolve_workflow_context.py \
-            --mode infrastructure \
-            --environment "$INPUT_ENVIRONMENT" \
-            --action "$INPUT_ACTION" \
+            --mode plan \
+            --environment sandbox \
+            --action plan \
             --ref-name "$REF_NAME" \
             --default-branch "$DEFAULT_BRANCH" \
             --repository-id "$REPOSITORY_ID" \
-            --input-cluster-name "$INPUT_CLUSTER_NAME" \
-            --input-snapshot-bucket-name "$INPUT_SNAPSHOT_BUCKET_NAME" \
-            --input-node-instance-type "$INPUT_NODE_INSTANCE_TYPE" \
-            --input-node-min-size "$INPUT_NODE_MIN_SIZE" \
-            --input-node-max-size "$INPUT_NODE_MAX_SIZE" \
-            --input-node-desired-size "$INPUT_NODE_DESIRED_SIZE" \
             --staging-cluster-name "$STAGING_CLUSTER_NAME" \
             --production-cluster-name "$PRODUCTION_CLUSTER_NAME" \
             --sandbox-cluster-prefix "$SANDBOX_CLUSTER_PREFIX" \
@@ -133,24 +89,24 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ steps.context.outputs.aws_role_arn }}
-          role-session-name: gha-infrastructure-${{ github.run_id }}
+          role-session-name: gha-pr-plan-${{ github.run_id }}
           aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
 
       - name: Materialize backend runtime env file
         id: runtime-env
         env:
-          DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
-          TEMPLATE_ENVIRONMENT: ${{ steps.context.outputs.runtime_template_environment }}
           SANDBOX_BACKEND_ENV_FILE: ${{ secrets['SANDBOX_BACKEND_ENV_FILE'] }}
           STAGING_BACKEND_ENV_FILE: ${{ secrets.STAGING_BACKEND_ENV_FILE }}
-          PRODUCTION_BACKEND_ENV_FILE: ${{ secrets.PRODUCTION_BACKEND_ENV_FILE }}
         run: |
-          TEMPLATE_PATH="$GITHUB_WORKSPACE/deploy/runtime/backend.${TEMPLATE_ENVIRONMENT}.env.example"
-          OUTPUT_PATH="$RUNNER_TEMP/backend-runtime.${DEPLOYMENT_ENVIRONMENT}.env"
+          TEMPLATE_PATH="$GITHUB_WORKSPACE/deploy/runtime/backend.staging.env.example"
+          OUTPUT_PATH="$RUNNER_TEMP/backend-runtime.sandbox.env"
 
-          if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then
-            ENV_CONTENT="$PRODUCTION_BACKEND_ENV_FILE"
-          elif [ "$DEPLOYMENT_ENVIRONMENT" = "sandbox" ] && [ -n "$SANDBOX_BACKEND_ENV_FILE" ]; then
+          if [ -n "$SANDBOX_BACKEND_ENV_FILE" ]; then
             ENV_CONTENT="$SANDBOX_BACKEND_ENV_FILE"
           else
             ENV_CONTENT="$STAGING_BACKEND_ENV_FILE"
@@ -158,10 +114,8 @@ jobs:
 
           if [ -n "$ENV_CONTENT" ]; then
             printf '%s\n' "$ENV_CONTENT" > "$OUTPUT_PATH"
-            echo "Using backend runtime env from GitHub secret for $DEPLOYMENT_ENVIRONMENT."
           else
             cat "$TEMPLATE_PATH" > "$OUTPUT_PATH"
-            echo "No secret-backed runtime env provided for $DEPLOYMENT_ENVIRONMENT. Falling back to committed template $TEMPLATE_ENVIRONMENT." >&2
           fi
 
           echo "env_file_path=$OUTPUT_PATH" >> "$GITHUB_OUTPUT"
@@ -169,15 +123,14 @@ jobs:
       - name: Extract managed service credentials
         id: runtime-contract
         env:
-          ACTION: ${{ github.event.inputs.action }}
           ENV_FILE_PATH: ${{ steps.runtime-env.outputs.env_file_path }}
         run: |
-          python3 - "$ENV_FILE_PATH" "$ACTION" <<'PY'
+          python3 - "$ENV_FILE_PATH" <<'PY'
+          import os
           import sys
           from pathlib import Path
 
           env_path = Path(sys.argv[1])
-          action = sys.argv[2]
           entries = {}
 
           for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -196,20 +149,9 @@ jobs:
 
           missing = [key for key, value in required.items() if not value]
           if missing:
-              raise SystemExit(f"Missing required backend runtime keys for managed services: {', '.join(missing)}")
+              raise SystemExit(f"Missing required backend runtime keys: {', '.join(missing)}")
 
-          if action == "apply":
-              placeholders = [
-                  key for key, value in required.items()
-                if value.startswith("change-me-")
-              ]
-              if placeholders:
-                  raise SystemExit(
-                      "Refusing to provision managed services with placeholder secrets. "
-                      f"Update these keys first: {', '.join(placeholders)}"
-                  )
-
-          github_output = Path(__import__("os").environ["GITHUB_OUTPUT"])
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
           with github_output.open("a", encoding="utf-8") as handle:
               for key, value in {
                   "db_name": required["POSTGRES_DB"],
@@ -220,12 +162,8 @@ jobs:
                   handle.write(f"{key}<<EOF\n{value}\nEOF\n")
           PY
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.6.6"
-
-      - name: Terraform init
+      - name: Terraform plan for EKS sandbox
+        id: eks-plan
         working-directory: terraform/eks
         env:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
@@ -247,43 +185,142 @@ jobs:
             -backend-config="key=eks/${TF_VAR_cluster_name}.tfstate" \
             -backend-config="region=${TF_STATE_REGION}"
 
-      - name: Terraform apply
-        if: github.event.inputs.action == 'apply'
-        working-directory: terraform/eks
+          set +e
+          terraform plan -input=false -lock=false -detailed-exitcode -no-color > "$RUNNER_TEMP/eks-plan.txt" 2>&1
+          exit_code=$?
+          set -e
+
+          cat "$RUNNER_TEMP/eks-plan.txt"
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform plan for sandbox SSM path
+        id: ssm-plan
+        working-directory: terraform/ssm
         env:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-          TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
-          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
-          TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
-          TF_VAR_node_instance_type: ${{ steps.context.outputs.node_instance_type }}
-          TF_VAR_node_min_size: ${{ steps.context.outputs.node_min_size }}
-          TF_VAR_node_max_size: ${{ steps.context.outputs.node_max_size }}
-          TF_VAR_node_desired_size: ${{ steps.context.outputs.node_desired_size }}
-          TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
-          TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
-          TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
-          TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
-        run: terraform apply -auto-approve -input=false
+          TF_VAR_environment: ${{ steps.context.outputs.ssm_environment_key }}
+          TF_VAR_env_file_path: ${{ steps.runtime-env.outputs.env_file_path }}
+          TF_VAR_kms_key_id: ${{ vars['SSM_KMS_KEY_ID'] || '' }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=ssm/${TF_VAR_environment}.tfstate" \
+            -backend-config="region=${TF_STATE_REGION}"
 
-      - name: Show infrastructure outputs
-        if: github.event.inputs.action == 'apply'
-        working-directory: terraform/eks
-        run: terraform output
+          set +e
+          terraform plan -input=false -lock=false -detailed-exitcode -no-color > "$RUNNER_TEMP/ssm-plan.txt" 2>&1
+          exit_code=$?
+          set -e
 
-      - name: Terraform destroy
-        if: github.event.inputs.action == 'destroy'
-        working-directory: terraform/eks
+          cat "$RUNNER_TEMP/ssm-plan.txt"
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+
+      - name: Build PR plan comment
         env:
-          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-          TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
-          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
-          TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
-          TF_VAR_node_instance_type: ${{ steps.context.outputs.node_instance_type }}
-          TF_VAR_node_min_size: ${{ steps.context.outputs.node_min_size }}
-          TF_VAR_node_max_size: ${{ steps.context.outputs.node_max_size }}
-          TF_VAR_node_desired_size: ${{ steps.context.outputs.node_desired_size }}
-          TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
-          TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
-          TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
-          TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
-        run: terraform destroy -auto-approve -input=false
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          SNAPSHOT_BUCKET_NAME: ${{ steps.context.outputs.snapshot_bucket_name }}
+          SSM_ENVIRONMENT_KEY: ${{ steps.context.outputs.ssm_environment_key }}
+          EKS_EXIT_CODE: ${{ steps.eks-plan.outputs.exit_code }}
+          SSM_EXIT_CODE: ${{ steps.ssm-plan.outputs.exit_code }}
+        run: |
+          python3 - "$RUNNER_TEMP/eks-plan.txt" "$RUNNER_TEMP/ssm-plan.txt" > "$RUNNER_TEMP/terraform-plan-comment.md" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+          import os
+
+          eks_plan = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+          ssm_plan = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+
+          def summarize(label: str, exit_code: str, content: str) -> tuple[str, str]:
+              summary_match = re.search(r"Plan:\s+\d+ to add, \d+ to change, \d+ to destroy\.", content)
+              if exit_code == "0":
+                  status = "no changes"
+              elif exit_code == "2":
+                  status = summary_match.group(0) if summary_match else "changes detected"
+              else:
+                  status = "plan failed"
+              excerpt = "\n".join(content.splitlines()[:200]).strip()
+              if not excerpt:
+                  excerpt = "No output captured."
+              return status, excerpt
+
+          eks_status, eks_excerpt = summarize("EKS", os.environ["EKS_EXIT_CODE"], eks_plan)
+          ssm_status, ssm_excerpt = summarize("SSM", os.environ["SSM_EXIT_CODE"], ssm_plan)
+
+          print("<!-- terraform-pr-plan -->")
+          print("## Terraform PR Plan")
+          print("")
+          print(f"- PR: #{os.environ['PR_NUMBER']}")
+          print(f"- Feature branch: `{os.environ['HEAD_REF']}`")
+          print(f"- Sandbox cluster: `{os.environ['CLUSTER_NAME']}`")
+          print(f"- Sandbox snapshot bucket: `{os.environ['SNAPSHOT_BUCKET_NAME']}`")
+          print(f"- Sandbox SSM path key: `{os.environ['SSM_ENVIRONMENT_KEY']}`")
+          print(f"- EKS plan: {eks_status}")
+          print(f"- SSM plan: {ssm_status}")
+          print("")
+          print("<details><summary>EKS plan excerpt</summary>")
+          print("")
+          print("```terraform")
+          print(eks_excerpt)
+          print("```")
+          print("</details>")
+          print("")
+          print("<details><summary>SSM plan excerpt</summary>")
+          print("")
+          print("```terraform")
+          print(ssm_excerpt)
+          print("```")
+          print("</details>")
+          PY
+
+      - name: Publish PR plan comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.COMMENT_FILE, 'utf8');
+            const issue_number = context.issue.number;
+            const marker = '<!-- terraform-pr-plan -->';
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find((comment) =>
+              comment.user.type === 'Bot' && comment.body.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                body,
+              });
+            }
+        env:
+          COMMENT_FILE: ${{ runner.temp }}/terraform-plan-comment.md
+
+      - name: Fail when a plan step fails
+        env:
+          EKS_EXIT_CODE: ${{ steps.eks-plan.outputs.exit_code }}
+          SSM_EXIT_CODE: ${{ steps.ssm-plan.outputs.exit_code }}
+        run: |
+          if [ "$EKS_EXIT_CODE" = "1" ] || [ "$SSM_EXIT_CODE" = "1" ]; then
+            echo "One or more terraform plan steps failed." >&2
+            exit 1
+          fi

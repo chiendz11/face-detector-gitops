@@ -6,13 +6,18 @@ on:
       environment:
         description: Environment to bootstrap in ArgoCD
         required: true
-        default: staging
+        default: sandbox
         type: choice
         options:
+          - sandbox
           - staging
           - production
+      cluster_name:
+        description: Optional sandbox EKS cluster name override; leave blank to derive from the feature branch name
+        required: false
+        default: ""
       git_revision:
-        description: Git branch or revision ArgoCD should track; leave blank to use the default branch
+        description: Git branch or revision ArgoCD should track; leave blank to use the selected feature branch for sandbox or the default branch for staging and production
         required: false
         default: ""
 
@@ -21,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     env:
       AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
       TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
@@ -36,36 +42,68 @@ jobs:
         id: context
         env:
           INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
           INPUT_GIT_REVISION: ${{ github.event.inputs.git_revision }}
+          REF_NAME: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          AWS_ROLE_SANDBOX_ARN: ${{ vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
+          AWS_ROLE_STAGING_ARN: ${{ vars['AWS_ROLE_STAGING_ARN'] || '' }}
+          AWS_ROLE_PRODUCTION_ARN: ${{ vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
           STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
           PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
+          SANDBOX_CLUSTER_PREFIX: ${{ vars['SANDBOX_EKS_CLUSTER_PREFIX'] || 'face-detector-sbx' }}
+          STAGING_SNAPSHOT_BUCKET_NAME: ${{ vars.STAGING_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-staging' }}
+          PRODUCTION_SNAPSHOT_BUCKET_NAME: ${{ vars.PRODUCTION_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-production' }}
+          SANDBOX_SNAPSHOT_BUCKET_PREFIX: ${{ vars['SANDBOX_SNAPSHOT_BUCKET_PREFIX'] || 'face-detector-sbx' }}
+          STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 't3.medium' }}
+          PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 't3.large' }}
+          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 't3.medium' }}
+          STAGING_NODE_MIN_SIZE: ${{ vars.STAGING_NODE_MIN_SIZE || '1' }}
+          STAGING_NODE_MAX_SIZE: ${{ vars.STAGING_NODE_MAX_SIZE || '2' }}
+          STAGING_NODE_DESIRED_SIZE: ${{ vars.STAGING_NODE_DESIRED_SIZE || '1' }}
+          PRODUCTION_NODE_MIN_SIZE: ${{ vars.PRODUCTION_NODE_MIN_SIZE || '2' }}
+          PRODUCTION_NODE_MAX_SIZE: ${{ vars.PRODUCTION_NODE_MAX_SIZE || '6' }}
+          PRODUCTION_NODE_DESIRED_SIZE: ${{ vars.PRODUCTION_NODE_DESIRED_SIZE || '2' }}
+          SANDBOX_NODE_MIN_SIZE: ${{ vars['SANDBOX_NODE_MIN_SIZE'] || '1' }}
+          SANDBOX_NODE_MAX_SIZE: ${{ vars['SANDBOX_NODE_MAX_SIZE'] || '2' }}
+          SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
         run: |
-          if [ "$INPUT_ENVIRONMENT" = "production" ]; then
-            echo "cluster_name=$PRODUCTION_CLUSTER_NAME" >> "$GITHUB_OUTPUT"
-            echo "param_prefix=/facedetector/production" >> "$GITHUB_OUTPUT"
-            echo "tf_environment=production" >> "$GITHUB_OUTPUT"
-            echo "application_template=deploy/argocd/production-application.yaml.tpl" >> "$GITHUB_OUTPUT"
-            echo "values_file=deploy/helm/face-detector/values-production.yaml" >> "$GITHUB_OUTPUT"
-          else
-            echo "cluster_name=$STAGING_CLUSTER_NAME" >> "$GITHUB_OUTPUT"
-            echo "param_prefix=/facedetector/staging" >> "$GITHUB_OUTPUT"
-            echo "tf_environment=staging" >> "$GITHUB_OUTPUT"
-            echo "application_template=deploy/argocd/staging-application.yaml.tpl" >> "$GITHUB_OUTPUT"
-            echo "values_file=deploy/helm/face-detector/values-staging.yaml" >> "$GITHUB_OUTPUT"
-          fi
-
-          TARGET_REVISION="$INPUT_GIT_REVISION"
-          if [ -z "$TARGET_REVISION" ]; then
-            TARGET_REVISION="$DEFAULT_BRANCH"
-          fi
-          echo "target_revision=$TARGET_REVISION" >> "$GITHUB_OUTPUT"
+          python3 scripts/resolve_workflow_context.py \
+            --mode bootstrap \
+            --environment "$INPUT_ENVIRONMENT" \
+            --ref-name "$REF_NAME" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --repository-id "$REPOSITORY_ID" \
+            --input-cluster-name "$INPUT_CLUSTER_NAME" \
+            --input-git-revision "$INPUT_GIT_REVISION" \
+            --staging-cluster-name "$STAGING_CLUSTER_NAME" \
+            --production-cluster-name "$PRODUCTION_CLUSTER_NAME" \
+            --sandbox-cluster-prefix "$SANDBOX_CLUSTER_PREFIX" \
+            --staging-snapshot-bucket-name "$STAGING_SNAPSHOT_BUCKET_NAME" \
+            --production-snapshot-bucket-name "$PRODUCTION_SNAPSHOT_BUCKET_NAME" \
+            --sandbox-snapshot-bucket-prefix "$SANDBOX_SNAPSHOT_BUCKET_PREFIX" \
+            --staging-node-instance-type "$STAGING_NODE_INSTANCE_TYPE" \
+            --production-node-instance-type "$PRODUCTION_NODE_INSTANCE_TYPE" \
+            --sandbox-node-instance-type "$SANDBOX_NODE_INSTANCE_TYPE" \
+            --staging-node-min-size "$STAGING_NODE_MIN_SIZE" \
+            --staging-node-max-size "$STAGING_NODE_MAX_SIZE" \
+            --staging-node-desired-size "$STAGING_NODE_DESIRED_SIZE" \
+            --production-node-min-size "$PRODUCTION_NODE_MIN_SIZE" \
+            --production-node-max-size "$PRODUCTION_NODE_MAX_SIZE" \
+            --production-node-desired-size "$PRODUCTION_NODE_DESIRED_SIZE" \
+            --sandbox-node-min-size "$SANDBOX_NODE_MIN_SIZE" \
+            --sandbox-node-max-size "$SANDBOX_NODE_MAX_SIZE" \
+            --sandbox-node-desired-size "$SANDBOX_NODE_DESIRED_SIZE" \
+            --role-sandbox-arn "$AWS_ROLE_SANDBOX_ARN" \
+            --role-staging-arn "$AWS_ROLE_STAGING_ARN" \
+            --role-production-arn "$AWS_ROLE_PRODUCTION_ARN"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ steps.context.outputs.aws_role_arn }}
+          role-session-name: gha-bootstrap-${{ github.run_id }}
           aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
 
       - name: Check whether EKS is running
@@ -89,7 +127,7 @@ jobs:
         if: steps.cluster.outputs.exists == 'true'
         env:
           VALUES_FILE: ${{ steps.context.outputs.values_file }}
-          ENVIRONMENT: ${{ steps.context.outputs.tf_environment }}
+          ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
         run: |
           if grep -q 'tag: latest' "$VALUES_FILE"; then
             echo "${ENVIRONMENT} values still contain the placeholder tag 'latest'." >&2
@@ -107,25 +145,29 @@ jobs:
         if: steps.cluster.outputs.exists == 'true'
         id: runtime-env
         env:
-          ENVIRONMENT: ${{ steps.context.outputs.tf_environment }}
+          DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+          TEMPLATE_ENVIRONMENT: ${{ steps.context.outputs.runtime_template_environment }}
+          SANDBOX_BACKEND_ENV_FILE: ${{ secrets['SANDBOX_BACKEND_ENV_FILE'] }}
           STAGING_BACKEND_ENV_FILE: ${{ secrets.STAGING_BACKEND_ENV_FILE }}
           PRODUCTION_BACKEND_ENV_FILE: ${{ secrets.PRODUCTION_BACKEND_ENV_FILE }}
         run: |
-          TEMPLATE_PATH="$GITHUB_WORKSPACE/deploy/runtime/backend.${ENVIRONMENT}.env.example"
-          OUTPUT_PATH="$RUNNER_TEMP/backend-runtime.${ENVIRONMENT}.env"
+          TEMPLATE_PATH="$GITHUB_WORKSPACE/deploy/runtime/backend.${TEMPLATE_ENVIRONMENT}.env.example"
+          OUTPUT_PATH="$RUNNER_TEMP/backend-runtime.${DEPLOYMENT_ENVIRONMENT}.env"
 
-          if [ "$ENVIRONMENT" = "production" ]; then
+          if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then
             ENV_CONTENT="$PRODUCTION_BACKEND_ENV_FILE"
+          elif [ "$DEPLOYMENT_ENVIRONMENT" = "sandbox" ] && [ -n "$SANDBOX_BACKEND_ENV_FILE" ]; then
+            ENV_CONTENT="$SANDBOX_BACKEND_ENV_FILE"
           else
             ENV_CONTENT="$STAGING_BACKEND_ENV_FILE"
           fi
 
           if [ -n "$ENV_CONTENT" ]; then
             printf '%s\n' "$ENV_CONTENT" > "$OUTPUT_PATH"
-            echo "Using backend runtime env from GitHub secret for $ENVIRONMENT."
+            echo "Using backend runtime env from GitHub secret for $DEPLOYMENT_ENVIRONMENT."
           else
             cat "$TEMPLATE_PATH" > "$OUTPUT_PATH"
-            echo "No secret-backed runtime env provided for $ENVIRONMENT. Falling back to committed template." >&2
+            echo "No secret-backed runtime env provided for $DEPLOYMENT_ENVIRONMENT. Falling back to committed template $TEMPLATE_ENVIRONMENT." >&2
           fi
 
           echo "env_file_path=$OUTPUT_PATH" >> "$GITHUB_OUTPUT"
@@ -167,7 +209,7 @@ jobs:
         working-directory: terraform/eks
         env:
           CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
-          ENVIRONMENT: ${{ steps.context.outputs.tf_environment }}
+          ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
           ENV_FILE_PATH: ${{ steps.runtime-env.outputs.env_file_path }}
           TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
           TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
@@ -255,9 +297,9 @@ jobs:
         working-directory: terraform/ssm
         env:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-          TF_VAR_environment: ${{ steps.context.outputs.tf_environment }}
+          TF_VAR_environment: ${{ steps.context.outputs.ssm_environment_key }}
           TF_VAR_env_file_path: ${{ steps.runtime-env.outputs.env_file_path }}
-          TF_VAR_kms_key_id: ${{ vars.SSM_KMS_KEY_ID || '' }}
+          TF_VAR_kms_key_id: ${{ vars['SSM_KMS_KEY_ID'] || '' }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
@@ -269,7 +311,7 @@ jobs:
       - name: Generate runtime env file from SSM
         if: steps.cluster.outputs.exists == 'true'
         env:
-          ENVIRONMENT: ${{ steps.context.outputs.tf_environment }}
+          ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
           OUTPUT_FILE: .env.runtime
           PARAM_PREFIX: ${{ steps.context.outputs.param_prefix }}
         run: |

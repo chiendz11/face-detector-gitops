@@ -189,20 +189,29 @@ This keeps the expensive EKS environment disposable without forcing stateful dat
 
 Required GitHub secrets for the new flow:
 
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
 - `AWS_REGION` (optional; defaults to `ap-southeast-1`)
 - `TF_STATE_BUCKET`
 - `TF_STATE_LOCK_TABLE`
 - `TF_STATE_REGION` (optional; defaults to `AWS_REGION`, but set it explicitly when the Terraform state bucket lives in another region)
 - `STAGING_BACKEND_ENV_FILE` (optional but recommended; multiline backend runtime env file for staging)
 - `PRODUCTION_BACKEND_ENV_FILE` (optional but recommended; multiline backend runtime env file for production)
+- `SANDBOX_BACKEND_ENV_FILE` (optional; when unset, sandbox workflows reuse the staging runtime contract)
 - `ARGOCD_REPO_USERNAME` (optional; needed when the GitHub repository is private)
 - `ARGOCD_REPO_TOKEN` (optional; needed when the GitHub repository is private)
 - `GHCR_USERNAME` (optional; needed only when GHCR images are private)
 - `GHCR_TOKEN` (optional; needed only when GHCR images are private)
 
+Required repository variables for GitHub OIDC role assumption:
+
+- `AWS_ROLE_SANDBOX_ARN`
+- `AWS_ROLE_STAGING_ARN`
+- `AWS_ROLE_PRODUCTION_ARN`
+
 If `STAGING_BACKEND_ENV_FILE` or `PRODUCTION_BACKEND_ENV_FILE` is not set, `ArgoCD Bootstrap` falls back to the committed template under `deploy/runtime/`. For real staging or production deployments, prefer the secret-backed env file so runtime values do not live in Git.
+
+When `SANDBOX_BACKEND_ENV_FILE` is not set, sandbox plan/apply/bootstrap runs fall back to the staging runtime contract and then rewrite infrastructure endpoints from the sandbox Terraform outputs.
+
+After you finish the GitHub OIDC migration, delete the legacy `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets. The infrastructure workflows no longer use IAM user credentials.
 
 Terraform state does not have to live in the same region as the deployed infrastructure. When the backend bucket and lock table are in a different region, set `TF_STATE_REGION` so workflow `terraform init` can reach the correct S3 and DynamoDB backend while `AWS_REGION` still points at the target workload region.
 
@@ -214,28 +223,35 @@ Recommended repository variables for the two-cluster setup:
 
 - `STAGING_EKS_CLUSTER_NAME` (optional; defaults to `face-detector-staging`)
 - `PRODUCTION_EKS_CLUSTER_NAME` (optional; defaults to `face-detector-production`)
+- `SANDBOX_EKS_CLUSTER_PREFIX` (optional; defaults to `face-detector-sbx`, and sandbox cluster names are derived from `feature/*` branch names)
 - `STAGING_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-staging`)
 - `PRODUCTION_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-production`)
+- `SANDBOX_SNAPSHOT_BUCKET_PREFIX` (optional; defaults to `face-detector-sbx`)
 - `STAGING_NODE_INSTANCE_TYPE`, `STAGING_NODE_MIN_SIZE`, `STAGING_NODE_MAX_SIZE`, `STAGING_NODE_DESIRED_SIZE` (optional; default to a small reactive-scaling staging envelope with 1 desired node and up to 2 nodes)
 - `PRODUCTION_NODE_INSTANCE_TYPE`, `PRODUCTION_NODE_MIN_SIZE`, `PRODUCTION_NODE_MAX_SIZE`, `PRODUCTION_NODE_DESIRED_SIZE` (optional; default to a larger production node group envelope)
+- `SANDBOX_NODE_INSTANCE_TYPE`, `SANDBOX_NODE_MIN_SIZE`, `SANDBOX_NODE_MAX_SIZE`, `SANDBOX_NODE_DESIRED_SIZE` (optional; default to a staging-sized sandbox envelope)
 - `SSM_KMS_KEY_ID` (optional; customer-managed KMS key for SSM `SecureString` parameters)
+
+OIDC trust policy templates for the three GitHub roles live under `aws/`, and the full setup checklist is documented in `aws/github-oidc-setup.md`.
 
 The active workflows are:
 
 - `CI Pipeline`: trunk-based validation on pull requests and pushes to `main` or `master`, plus GHCR image publish on push
+- `Terraform PR Plan`: for `feature/*` pull requests into `main` or `master`, resolves a sandbox name, assumes `Role-Sandbox` through GitHub OIDC, and comments EKS plus SSM plan output back onto the PR
 - `GitOps Staging Promotion`: after `CI Pipeline` succeeds on `main` or `master`, commits the exact immutable image SHA into `values-staging.yaml`
 - `GitOps Production Promotion`: when a GitHub Release is published, resolves the release commit SHA and commits it into `values-production.yaml`
-- `ArgoCD Bootstrap`: manually seeds SSM-backed runtime secrets, optional GHCR pull credentials, and the correct ArgoCD Application into the selected cluster
-- `Infrastructure Management`: manual `apply` or `destroy` for the selected EKS infrastructure
+- `ArgoCD Bootstrap`: manually seeds SSM-backed runtime secrets, optional GHCR pull credentials, and the correct ArgoCD Application into the selected cluster, including feature-branch sandbox clusters via `cluster_name` override
+- `Infrastructure Management`: manual `apply` or `destroy` for sandbox EKS infrastructure and manual `apply` for shared staging or production
 
 The promotion workflows commit with `[skip ci]` so GitOps config updates do not trigger an infinite CI rebuild loop.
 
-There is intentionally no per-PR preview environment in this setup. For a solo workflow, local validation plus on-demand EKS bring-up is cheaper and simpler than creating temporary namespaces or releases for every pull request.
+There is intentionally no automatic per-PR application preview environment in this setup. Infrastructure sandboxes are manual because EKS and RDS are expensive, but `Terraform PR Plan` plus manual sandbox `apply` and `destroy` now provide a controlled feature-branch infrastructure test path.
 
 ## Runtime Mapping on EKS
 
 - `backend`, `worker`, `frontend-admin`, and `nginx` are deployed by the Helm chart under `deploy/helm/face-detector`
 - PostgreSQL, Redis or Valkey, and S3 stay external to the cluster
+- sandbox and staging both track `deploy/helm/face-detector/values-staging.yaml` through `deploy/argocd/staging-application.yaml.tpl`, but sandbox clusters get isolated SSM paths under `/facedetector/sandbox/<cluster-name>/...`
 - staging tracks `deploy/helm/face-detector/values-staging.yaml` through `deploy/argocd/staging-application.yaml.tpl`
 - production tracks `deploy/helm/face-detector/values-production.yaml` through `deploy/argocd/production-application.yaml.tpl`
 - `nginx` remains the single public entry point and proxies `/api/` and `/admin/`
@@ -254,13 +270,18 @@ There is intentionally no per-PR preview environment in this setup. For a solo w
 
 ### Minimal IAM access pattern
 
-For GitHub Actions and EKS worker nodes you should use an IAM principal that can:
+Split the AWS identity story into two parts:
+
+- GitHub Actions should assume `Role-Sandbox`, `Role-Staging`, and `Role-Prod` through GitHub OIDC. The trust policy templates live in `aws/github-oidc-trust-policy-*.json`.
+- Runtime workloads inside AWS still need their own IAM permissions for SSM, S3, and any future service integration.
+
+For GitHub Actions and EKS worker nodes you should still ensure the relevant principals can:
 
 - read and write SSM parameters under `/facedetector/*`
-- create and manage EKS, VPC, and S3 resources for the lab environment
+- create and manage EKS, VPC, and S3 resources for the lab environment when the role is meant to run Terraform
 - list and get objects from the S3 snapshot bucket
 
-A sample policy file is available at `aws/iam-policy-face-detector.json`.
+A sample runtime access policy file is available at `aws/iam-policy-face-detector.json`. The GitHub OIDC role setup is documented in `aws/github-oidc-setup.md`.
 
 ## Security and Resilience Testing
 
