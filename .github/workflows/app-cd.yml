@@ -13,11 +13,11 @@ on:
           - staging
           - production
       cluster_name:
-        description: Optional sandbox EKS cluster name override; leave blank to derive from the feature branch name
+        description: Optional sandbox EKS cluster name override; leave blank to derive from the selected sandbox branch name
         required: false
         default: ""
       git_revision:
-        description: Git branch or revision ArgoCD should track; leave blank to use the selected feature branch for sandbox or the default branch for staging and production
+        description: Git branch or revision ArgoCD should track; leave blank to use the selected sandbox branch or the default branch for staging and production
         required: false
         default: ""
 
@@ -68,6 +68,7 @@ jobs:
           SANDBOX_NODE_MIN_SIZE: ${{ vars['SANDBOX_NODE_MIN_SIZE'] || '1' }}
           SANDBOX_NODE_MAX_SIZE: ${{ vars['SANDBOX_NODE_MAX_SIZE'] || '2' }}
           SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
+          SANDBOX_ALLOWED_BRANCH_PREFIXES: ${{ vars['SANDBOX_ALLOWED_BRANCH_PREFIXES'] || 'feature/,infra/,chore/,platform/' }}
         run: |
           python3 scripts/resolve_workflow_context.py \
             --mode bootstrap \
@@ -95,6 +96,7 @@ jobs:
             --sandbox-node-min-size "$SANDBOX_NODE_MIN_SIZE" \
             --sandbox-node-max-size "$SANDBOX_NODE_MAX_SIZE" \
             --sandbox-node-desired-size "$SANDBOX_NODE_DESIRED_SIZE" \
+            --sandbox-allowed-branch-prefixes "$SANDBOX_ALLOWED_BRANCH_PREFIXES" \
             --role-sandbox-arn "$AWS_ROLE_SANDBOX_ARN" \
             --role-staging-arn "$AWS_ROLE_STAGING_ARN" \
             --role-production-arn "$AWS_ROLE_PRODUCTION_ARN"
