@@ -1,0 +1,467 @@
+name: ArgoCD Bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to bootstrap in ArgoCD
+        required: true
+        default: sandbox
+        type: choice
+        options:
+          - sandbox
+          - staging
+          - production
+      cluster_name:
+        description: Optional sandbox EKS cluster name override; leave blank to derive from the selected sandbox branch name
+        required: false
+        default: ""
+      git_revision:
+        description: Git branch or revision ArgoCD should track; leave blank to use the selected sandbox branch or the default branch for staging and production
+        required: false
+        default: ""
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+      TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+      APP_NAMESPACE: facedetector
+      ARGOCD_NAMESPACE: argocd
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve bootstrap context
+        id: context
+        env:
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+          INPUT_GIT_REVISION: ${{ github.event.inputs.git_revision }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          AWS_ROLE_SANDBOX_ARN: ${{ vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
+          AWS_ROLE_STAGING_ARN: ${{ vars['AWS_ROLE_STAGING_ARN'] || '' }}
+          AWS_ROLE_PRODUCTION_ARN: ${{ vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
+          STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
+          PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
+          SANDBOX_CLUSTER_PREFIX: ${{ vars['SANDBOX_EKS_CLUSTER_PREFIX'] || 'face-detector-sbx' }}
+          STAGING_SNAPSHOT_BUCKET_NAME: ${{ vars.STAGING_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-staging' }}
+          PRODUCTION_SNAPSHOT_BUCKET_NAME: ${{ vars.PRODUCTION_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-production' }}
+          SANDBOX_SNAPSHOT_BUCKET_PREFIX: ${{ vars['SANDBOX_SNAPSHOT_BUCKET_PREFIX'] || 'face-detector-sbx' }}
+          STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 't3.medium' }}
+          PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 't3.large' }}
+          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 't3.medium' }}
+          STAGING_NODE_MIN_SIZE: ${{ vars.STAGING_NODE_MIN_SIZE || '1' }}
+          STAGING_NODE_MAX_SIZE: ${{ vars.STAGING_NODE_MAX_SIZE || '2' }}
+          STAGING_NODE_DESIRED_SIZE: ${{ vars.STAGING_NODE_DESIRED_SIZE || '1' }}
+          PRODUCTION_NODE_MIN_SIZE: ${{ vars.PRODUCTION_NODE_MIN_SIZE || '2' }}
+          PRODUCTION_NODE_MAX_SIZE: ${{ vars.PRODUCTION_NODE_MAX_SIZE || '6' }}
+          PRODUCTION_NODE_DESIRED_SIZE: ${{ vars.PRODUCTION_NODE_DESIRED_SIZE || '2' }}
+          SANDBOX_NODE_MIN_SIZE: ${{ vars['SANDBOX_NODE_MIN_SIZE'] || '1' }}
+          SANDBOX_NODE_MAX_SIZE: ${{ vars['SANDBOX_NODE_MAX_SIZE'] || '2' }}
+          SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
+          SANDBOX_ALLOWED_BRANCH_PREFIXES: ${{ vars['SANDBOX_ALLOWED_BRANCH_PREFIXES'] || 'feature/,infra/,chore/,platform/' }}
+        run: |
+          python3 scripts/resolve_workflow_context.py \
+            --mode bootstrap \
+            --environment "$INPUT_ENVIRONMENT" \
+            --ref-name "$REF_NAME" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --repository-id "$REPOSITORY_ID" \
+            --input-cluster-name "$INPUT_CLUSTER_NAME" \
+            --input-git-revision "$INPUT_GIT_REVISION" \
+            --staging-cluster-name "$STAGING_CLUSTER_NAME" \
+            --production-cluster-name "$PRODUCTION_CLUSTER_NAME" \
+            --sandbox-cluster-prefix "$SANDBOX_CLUSTER_PREFIX" \
+            --staging-snapshot-bucket-name "$STAGING_SNAPSHOT_BUCKET_NAME" \
+            --production-snapshot-bucket-name "$PRODUCTION_SNAPSHOT_BUCKET_NAME" \
+            --sandbox-snapshot-bucket-prefix "$SANDBOX_SNAPSHOT_BUCKET_PREFIX" \
+            --staging-node-instance-type "$STAGING_NODE_INSTANCE_TYPE" \
+            --production-node-instance-type "$PRODUCTION_NODE_INSTANCE_TYPE" \
+            --sandbox-node-instance-type "$SANDBOX_NODE_INSTANCE_TYPE" \
+            --staging-node-min-size "$STAGING_NODE_MIN_SIZE" \
+            --staging-node-max-size "$STAGING_NODE_MAX_SIZE" \
+            --staging-node-desired-size "$STAGING_NODE_DESIRED_SIZE" \
+            --production-node-min-size "$PRODUCTION_NODE_MIN_SIZE" \
+            --production-node-max-size "$PRODUCTION_NODE_MAX_SIZE" \
+            --production-node-desired-size "$PRODUCTION_NODE_DESIRED_SIZE" \
+            --sandbox-node-min-size "$SANDBOX_NODE_MIN_SIZE" \
+            --sandbox-node-max-size "$SANDBOX_NODE_MAX_SIZE" \
+            --sandbox-node-desired-size "$SANDBOX_NODE_DESIRED_SIZE" \
+            --sandbox-allowed-branch-prefixes "$SANDBOX_ALLOWED_BRANCH_PREFIXES" \
+            --role-sandbox-arn "$AWS_ROLE_SANDBOX_ARN" \
+            --role-staging-arn "$AWS_ROLE_STAGING_ARN" \
+            --role-production-arn "$AWS_ROLE_PRODUCTION_ARN"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.context.outputs.aws_role_arn }}
+          role-session-name: gha-bootstrap-${{ github.run_id }}
+          aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Check whether EKS is running
+        id: cluster
+        env:
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+        run: |
+          if aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip when infrastructure is offline
+        if: steps.cluster.outputs.exists != 'true'
+        env:
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+        run: echo "EKS cluster $CLUSTER_NAME is not running. Skipping bootstrap."
+
+      - name: Verify promoted image tags exist in Git
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          VALUES_FILE: ${{ steps.context.outputs.values_file }}
+          ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+        run: |
+          if grep -q 'tag: latest' "$VALUES_FILE"; then
+            echo "${ENVIRONMENT} values still contain the placeholder tag 'latest'." >&2
+            echo "Run the GitOps promotion workflow first so Git contains immutable image tags." >&2
+            exit 1
+          fi
+
+      - name: Set up Terraform
+        if: steps.cluster.outputs.exists == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Materialize backend runtime env file
+        if: steps.cluster.outputs.exists == 'true'
+        id: runtime-env
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+          TEMPLATE_ENVIRONMENT: ${{ steps.context.outputs.runtime_template_environment }}
+          SANDBOX_BACKEND_ENV_FILE: ${{ secrets['SANDBOX_BACKEND_ENV_FILE'] }}
+          STAGING_BACKEND_ENV_FILE: ${{ secrets.STAGING_BACKEND_ENV_FILE }}
+          PRODUCTION_BACKEND_ENV_FILE: ${{ secrets.PRODUCTION_BACKEND_ENV_FILE }}
+        run: |
+          TEMPLATE_PATH="$GITHUB_WORKSPACE/deploy/runtime/backend.${TEMPLATE_ENVIRONMENT}.env.example"
+          OUTPUT_PATH="$RUNNER_TEMP/backend-runtime.${DEPLOYMENT_ENVIRONMENT}.env"
+
+          if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then
+            ENV_CONTENT="$PRODUCTION_BACKEND_ENV_FILE"
+          elif [ "$DEPLOYMENT_ENVIRONMENT" = "sandbox" ] && [ -n "$SANDBOX_BACKEND_ENV_FILE" ]; then
+            ENV_CONTENT="$SANDBOX_BACKEND_ENV_FILE"
+          else
+            ENV_CONTENT="$STAGING_BACKEND_ENV_FILE"
+          fi
+
+          if [ -n "$ENV_CONTENT" ]; then
+            printf '%s\n' "$ENV_CONTENT" > "$OUTPUT_PATH"
+            echo "Using backend runtime env from GitHub secret for $DEPLOYMENT_ENVIRONMENT."
+          else
+            cat "$TEMPLATE_PATH" > "$OUTPUT_PATH"
+            echo "No secret-backed runtime env provided for $DEPLOYMENT_ENVIRONMENT. Falling back to committed template $TEMPLATE_ENVIRONMENT." >&2
+          fi
+
+          echo "env_file_path=$OUTPUT_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Extract managed service credentials from backend runtime env file
+        if: steps.cluster.outputs.exists == 'true'
+        id: runtime-contract
+        env:
+          ENV_FILE_PATH: ${{ steps.runtime-env.outputs.env_file_path }}
+        run: |
+          python3 - "$ENV_FILE_PATH" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          entries = {}
+
+          for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+              line = raw_line.strip()
+              if not line or line.startswith("#") or "=" not in raw_line:
+                  continue
+              key, value = raw_line.split("=", 1)
+              entries[key.strip()] = value.strip()
+
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
+          with github_output.open("a", encoding="utf-8") as handle:
+              for key, value in {
+                  "db_name": entries.get("POSTGRES_DB", ""),
+                  "db_username": entries.get("POSTGRES_USER", ""),
+                  "db_password": entries.get("POSTGRES_PASSWORD", ""),
+                  "redis_auth_token": entries.get("REDIS_PASSWORD", ""),
+              }.items():
+                  handle.write(f"{key}<<EOF\n{value}\nEOF\n")
+          PY
+
+      - name: Inject managed infrastructure endpoints into backend runtime env file
+        if: steps.cluster.outputs.exists == 'true'
+        working-directory: terraform/eks
+        env:
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+          ENV_FILE_PATH: ${{ steps.runtime-env.outputs.env_file_path }}
+          TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
+          TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
+          TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
+          TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
+        run: |
+          export TF_VAR_deployment_environment="$ENVIRONMENT"
+          export TF_VAR_cluster_name="$CLUSTER_NAME"
+
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=eks/${CLUSTER_NAME}.tfstate" \
+            -backend-config="region=${TF_STATE_REGION}"
+
+          terraform output -json > "$RUNNER_TEMP/eks-outputs.json"
+
+          python3 - "$ENV_FILE_PATH" "$RUNNER_TEMP/eks-outputs.json" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from urllib.parse import quote
+
+          env_path = Path(sys.argv[1])
+          outputs_path = Path(sys.argv[2])
+          outputs = json.loads(outputs_path.read_text(encoding="utf-8"))
+
+          def output_value(name: str) -> str:
+              value = outputs.get(name, {}).get("value")
+              return "" if value is None else str(value)
+
+          lines = env_path.read_text(encoding="utf-8").splitlines()
+          ordered_keys = []
+          entries = {}
+
+          for raw_line in lines:
+              if "=" not in raw_line or raw_line.lstrip().startswith("#"):
+                  continue
+              key, value = raw_line.split("=", 1)
+              key = key.strip()
+              if key not in ordered_keys:
+                  ordered_keys.append(key)
+              entries[key] = value.strip()
+
+          db_user = output_value("database_username") or entries.get("POSTGRES_USER", "")
+          db_name = output_value("database_name") or entries.get("POSTGRES_DB", "")
+          db_password = entries.get("POSTGRES_PASSWORD", "")
+          db_endpoint = output_value("database_endpoint")
+          db_port = output_value("database_port") or "5432"
+          redis_password = entries.get("REDIS_PASSWORD", "")
+          redis_endpoint = output_value("redis_primary_endpoint")
+          redis_port = output_value("redis_port") or "6379"
+          snapshot_bucket = output_value("snapshot_bucket_name")
+
+          entries["POSTGRES_USER"] = db_user
+          entries["POSTGRES_DB"] = db_name
+          entries["DATABASE_REPLICA_URLS"] = ""
+          entries["AWS_S3_REGION"] = os.environ["AWS_REGION"]
+
+          if db_endpoint:
+              encoded_user = quote(db_user, safe="")
+              encoded_password = quote(db_password, safe="")
+              encoded_db_name = quote(db_name, safe="")
+              entries["DATABASE_URL"] = (
+                  f"postgresql+psycopg://{encoded_user}:{encoded_password}@{db_endpoint}:{db_port}/{encoded_db_name}"
+              )
+
+          if redis_endpoint:
+              encoded_redis_password = quote(redis_password, safe="")
+              entries["REDIS_ADDRESS"] = f"{redis_endpoint}:{redis_port}"
+              entries["REDIS_URL"] = f"rediss://:{encoded_redis_password}@{redis_endpoint}:{redis_port}/0"
+
+          if snapshot_bucket:
+              entries["AWS_S3_BUCKET"] = snapshot_bucket
+
+          missing_order = [key for key in entries if key not in ordered_keys]
+          with env_path.open("w", encoding="utf-8") as handle:
+              for key in ordered_keys + missing_order:
+                  handle.write(f"{key}={entries[key]}\n")
+          PY
+
+      - name: Sync SSM parameters from backend runtime env file
+        if: steps.cluster.outputs.exists == 'true'
+        working-directory: terraform/ssm
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_environment: ${{ steps.context.outputs.ssm_environment_key }}
+          TF_VAR_env_file_path: ${{ steps.runtime-env.outputs.env_file_path }}
+          TF_VAR_kms_key_id: ${{ vars['SSM_KMS_KEY_ID'] || '' }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=ssm/${TF_VAR_environment}.tfstate" \
+            -backend-config="region=${TF_STATE_REGION}"
+          terraform apply -auto-approve -input=false
+
+      - name: Generate runtime env file from SSM
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+          OUTPUT_FILE: .env.runtime
+          PARAM_PREFIX: ${{ steps.context.outputs.param_prefix }}
+        run: |
+          chmod +x scripts/generate-env-from-ssm.sh
+          bash scripts/generate-env-from-ssm.sh
+
+      - name: Resolve GHCR image repositories
+        if: steps.cluster.outputs.exists == 'true'
+        id: image-meta
+        run: |
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          echo "backend=ghcr.io/${OWNER}/face-detector-backend" >> "$GITHUB_OUTPUT"
+          echo "frontend=ghcr.io/${OWNER}/face-detector-admin" >> "$GITHUB_OUTPUT"
+
+      - name: Install kubectl and gettext
+        if: steps.cluster.outputs.exists == 'true'
+        run: |
+          curl -sSL -o kubectl "https://dl.k8s.io/release/v1.30.1/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          sudo apt-get update
+          sudo apt-get install -y gettext-base
+
+      - name: Configure kubeconfig
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Wait for ArgoCD control plane
+        if: steps.cluster.outputs.exists == 'true'
+        run: kubectl wait --namespace "$ARGOCD_NAMESPACE" --for=condition=available deployment/argocd-server --timeout=10m
+
+      - name: Configure ArgoCD repository credentials
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          ARGOCD_REPO_USERNAME: ${{ secrets.ARGOCD_REPO_USERNAME }}
+          ARGOCD_REPO_TOKEN: ${{ secrets.ARGOCD_REPO_TOKEN }}
+        run: |
+          if [ -z "$ARGOCD_REPO_TOKEN" ]; then
+            echo "ARGOCD_REPO_TOKEN is not set. Assuming the repository is public."
+            exit 0
+          fi
+
+          REPO_USERNAME="$ARGOCD_REPO_USERNAME"
+          if [ -z "$REPO_USERNAME" ]; then
+            REPO_USERNAME="git"
+          fi
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: repo-face-detector
+            namespace: ${ARGOCD_NAMESPACE}
+            labels:
+              argocd.argoproj.io/secret-type: repository
+          stringData:
+            type: git
+            url: https://github.com/${GITHUB_REPOSITORY}.git
+            username: ${REPO_USERNAME}
+            password: ${ARGOCD_REPO_TOKEN}
+          EOF
+
+      - name: Ensure application namespace exists
+        if: steps.cluster.outputs.exists == 'true'
+        run: kubectl create namespace "$APP_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Configure GHCR image pull secret
+        if: steps.cluster.outputs.exists == 'true'
+        id: ghcr-auth
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          if [ -z "$GHCR_TOKEN" ]; then
+            echo "parameter_block=" >> "$GITHUB_OUTPUT"
+            echo "GHCR_TOKEN is not set. Assuming GHCR images are public."
+            exit 0
+          fi
+
+          REGISTRY_USERNAME="$GHCR_USERNAME"
+          if [ -z "$REGISTRY_USERNAME" ]; then
+            REGISTRY_USERNAME="$GITHUB_REPOSITORY_OWNER"
+          fi
+
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --namespace "$APP_NAMESPACE" \
+            --docker-server=ghcr.io \
+            --docker-username="$REGISTRY_USERNAME" \
+            --docker-password="$GHCR_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          {
+            echo "parameter_block<<EOF"
+            echo "        - name: imagePullSecrets[0].name"
+            echo "          value: ghcr-pull-secret"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create bootstrap application secret
+        if: steps.cluster.outputs.exists == 'true'
+        run: |
+          kubectl create secret generic face-detector-env \
+            --namespace "$APP_NAMESPACE" \
+            --from-env-file=.env.runtime \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply ArgoCD application
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          APPLICATION_TEMPLATE: ${{ steps.context.outputs.application_template }}
+          TARGET_REVISION: ${{ steps.context.outputs.target_revision }}
+          BACKEND_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.backend }}
+          FRONTEND_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.frontend }}
+          IMAGE_PULL_SECRET_PARAMETER: ${{ steps.ghcr-auth.outputs.parameter_block }}
+        run: envsubst < "$APPLICATION_TEMPLATE" | kubectl apply -f -
+
+      - name: Wait for application rollout
+        if: steps.cluster.outputs.exists == 'true'
+        run: |
+          for deployment in backend frontend-admin nginx; do
+            for _ in $(seq 1 30); do
+              if kubectl get deployment/${deployment} --namespace "$APP_NAMESPACE" >/dev/null 2>&1; then
+                break
+              fi
+              sleep 10
+            done
+          done
+          for deployment in backend frontend-admin nginx; do
+            kubectl rollout status deployment/${deployment} --namespace "$APP_NAMESPACE" --timeout=10m
+          done
+          kubectl rollout status deployment/worker --namespace "$APP_NAMESPACE" --timeout=10m || true
+
+      - name: Wait for public load balancer hostname
+        if: steps.cluster.outputs.exists == 'true'
+        id: public-host
+        run: |
+          HOSTNAME=""
+          for _ in $(seq 1 30); do
+            HOSTNAME=$(kubectl get service nginx --namespace "$APP_NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            if [ -n "$HOSTNAME" ]; then
+              break
+            fi
+            sleep 20
+          done
+          echo "hostname=${HOSTNAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Show public URL
+        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        run: echo "Application available at http://${{ steps.public-host.outputs.hostname }}/admin/"

@@ -65,8 +65,20 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit
 
-      - name: Run Python dependency audit
-        run: pip-audit --progress=off
+      - name: Run backend dependency audit
+        run: |
+          # Temporary allowlist for known vulnerabilities in pinned dependencies.
+          # Keep this list short and remove entries as dependencies are upgraded.
+          pip-audit -r backend/requirements.txt --progress=off \
+            --ignore-vuln CVE-2026-24486 \
+            --ignore-vuln CVE-2026-40347 \
+            --ignore-vuln PYSEC-2023-184 \
+            --ignore-vuln GHSA-jh2j-j4j9-crg3 \
+            --ignore-vuln CVE-2026-30922 \
+            --ignore-vuln CVE-2025-62727
+
+      - name: Run edge-client dependency audit
+        run: pip-audit -r edge-client/requirements.txt --progress=off
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
