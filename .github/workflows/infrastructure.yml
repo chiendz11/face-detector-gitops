@@ -247,6 +247,41 @@ jobs:
             -backend-config="key=eks/${TF_VAR_cluster_name}.tfstate" \
             -backend-config="region=${TF_STATE_REGION}"
 
+      - name: Recover orphaned sandbox Helm releases
+        if: github.event.inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox'
+        working-directory: terraform/eks
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+        run: |
+          if ! aws eks describe-cluster --region "$TF_VAR_aws_region" --name "$TF_VAR_cluster_name" >/dev/null 2>&1; then
+            echo "Cluster $TF_VAR_cluster_name does not exist yet. Skipping orphaned Helm release cleanup."
+            exit 0
+          fi
+
+          if ! command -v helm >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
+
+          terraform state list > "$RUNNER_TEMP/terraform-state.txt"
+          aws eks update-kubeconfig --region "$TF_VAR_aws_region" --name "$TF_VAR_cluster_name" --alias "$TF_VAR_cluster_name"
+
+          while IFS='|' read -r state_address release_name release_namespace; do
+            if grep -Fxq "$state_address" "$RUNNER_TEMP/terraform-state.txt"; then
+              continue
+            fi
+
+            if helm status "$release_name" -n "$release_namespace" >/dev/null 2>&1; then
+              echo "Uninstalling orphaned Helm release $release_name in namespace $release_namespace before Terraform apply."
+              helm uninstall "$release_name" -n "$release_namespace"
+            fi
+          done <<'EOF'
+          helm_release.argocd|argocd|argocd
+          helm_release.metrics_server|metrics-server|kube-system
+          helm_release.keda[0]|keda|keda
+          helm_release.cluster_autoscaler[0]|cluster-autoscaler|kube-system
+          EOF
+
       - name: Terraform apply
         if: github.event.inputs.action == 'apply'
         working-directory: terraform/eks
