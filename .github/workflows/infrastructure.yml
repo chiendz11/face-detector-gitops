@@ -1,6 +1,54 @@
 name: Infrastructure Management
 
 on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      action:
+        required: true
+        type: string
+      cluster_name:
+        required: false
+        type: string
+        default: ""
+      snapshot_bucket_name:
+        required: false
+        type: string
+        default: ""
+      node_instance_type:
+        required: false
+        type: string
+        default: ""
+      node_min_size:
+        required: false
+        type: string
+        default: ""
+      node_max_size:
+        required: false
+        type: string
+        default: ""
+      node_desired_size:
+        required: false
+        type: string
+        default: ""
+      pull_request_number:
+        required: false
+        type: string
+        default: ""
+      source_ref_name:
+        required: false
+        type: string
+        default: ""
+      source_git_sha:
+        required: false
+        type: string
+        default: ""
+      owner_login:
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       environment:
@@ -21,11 +69,11 @@ on:
           - apply
           - destroy
       cluster_name:
-        description: Optional sandbox EKS cluster name override. Shared staging and production ignore overrides and will fail fast.
+        description: Deprecated. Sandbox cluster names are derived from the PR number and overrides are rejected.
         required: false
         default: ""
       snapshot_bucket_name:
-        description: Optional sandbox S3 bucket name override for archived snapshots
+        description: Deprecated. Sandbox snapshot buckets are derived from the PR number and overrides are rejected.
         required: false
         default: ""
       node_instance_type:
@@ -44,6 +92,26 @@ on:
         description: Optional EKS node group desired size override
         required: false
         default: ""
+      pull_request_number:
+        description: Optional sandbox PR number used for deterministic state when dispatching from the default branch
+        required: false
+        default: ""
+      source_ref_name:
+        description: Optional sandbox PR head branch used when dispatching from the default branch
+        required: false
+        default: ""
+      source_git_sha:
+        description: Optional sandbox PR head commit SHA used for env_version when dispatching from the default branch
+        required: false
+        default: ""
+      owner_login:
+        description: Optional sandbox owner login used for cost-allocation tags
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ inputs.environment == 'sandbox' && format('infrastructure-sandbox-{0}', inputs.pull_request_number || format('{0}-{1}', inputs.owner_login || 'admin', inputs.source_ref_name || github.ref_name)) || format('infrastructure-{0}', inputs.environment) }}
+  cancel-in-progress: false
 
 jobs:
   infrastructure:
@@ -51,39 +119,56 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      issues: write
+      pull-requests: write
     env:
       AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
       TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.environment == 'sandbox' && inputs.action == 'apply' && (inputs.source_ref_name || github.ref_name) || github.event.repository.default_branch }}
+
+      - name: Reject unsupported manual sandbox workflow refs
+        if: github.event_name == 'workflow_dispatch' && inputs.environment == 'sandbox' && github.ref_name != github.event.repository.default_branch && !startsWith(github.ref_name, 'devops/')
+        run: |
+          echo "Manual sandbox infrastructure runs are allowed only from the default branch or a devops/* branch." >&2
+          echo "Dispatch on ${{ github.event.repository.default_branch }} for rescue, or use a devops/* branch for admin verification." >&2
+          exit 1
 
       - name: Resolve infrastructure context
         id: context
         env:
-          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
-          INPUT_ACTION: ${{ github.event.inputs.action }}
-          REF_NAME: ${{ github.ref_name }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_ACTION: ${{ inputs.action }}
+          INPUT_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          REF_NAME: ${{ inputs.source_ref_name || github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REPOSITORY_ID: ${{ github.repository_id }}
-          INPUT_CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
-          INPUT_SNAPSHOT_BUCKET_NAME: ${{ github.event.inputs.snapshot_bucket_name }}
-          INPUT_NODE_INSTANCE_TYPE: ${{ github.event.inputs.node_instance_type }}
-          INPUT_NODE_MIN_SIZE: ${{ github.event.inputs.node_min_size }}
-          INPUT_NODE_MAX_SIZE: ${{ github.event.inputs.node_max_size }}
-          INPUT_NODE_DESIRED_SIZE: ${{ github.event.inputs.node_desired_size }}
-          AWS_ROLE_SANDBOX_ARN: ${{ vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
-          AWS_ROLE_STAGING_ARN: ${{ vars['AWS_ROLE_STAGING_ARN'] || '' }}
-          AWS_ROLE_PRODUCTION_ARN: ${{ vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
+          GITHUB_REPOSITORY_SLUG: ${{ github.repository }}
+          INPUT_CLUSTER_NAME: ${{ inputs.cluster_name }}
+          INPUT_SNAPSHOT_BUCKET_NAME: ${{ inputs.snapshot_bucket_name }}
+          INPUT_NODE_INSTANCE_TYPE: ${{ inputs.node_instance_type }}
+          INPUT_NODE_MIN_SIZE: ${{ inputs.node_min_size }}
+          INPUT_NODE_MAX_SIZE: ${{ inputs.node_max_size }}
+          INPUT_NODE_DESIRED_SIZE: ${{ inputs.node_desired_size }}
+          INPUT_OWNER_LOGIN: ${{ inputs.owner_login }}
+          GIT_SHA: ${{ inputs.source_git_sha || github.sha }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ROLE_SANDBOX_ARN: ${{ secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
+          AWS_ROLE_STAGING_ARN: ${{ secrets.AWS_ROLE_STAGING_ARN || vars['AWS_ROLE_STAGING_ARN'] || '' }}
+          AWS_ROLE_PRODUCTION_ARN: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
           STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
           PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
           SANDBOX_CLUSTER_PREFIX: ${{ vars['SANDBOX_EKS_CLUSTER_PREFIX'] || 'face-detector-sbx' }}
           STAGING_SNAPSHOT_BUCKET_NAME: ${{ vars.STAGING_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-staging' }}
           PRODUCTION_SNAPSHOT_BUCKET_NAME: ${{ vars.PRODUCTION_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-production' }}
           SANDBOX_SNAPSHOT_BUCKET_PREFIX: ${{ vars['SANDBOX_SNAPSHOT_BUCKET_PREFIX'] || 'face-detector-sbx' }}
-          STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 't3.medium' }}
-          PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 't3.large' }}
-          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 't3.medium' }}
+          STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 'c7i-flex.large' }}
+          PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 'm7i-flex.large' }}
+          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 'c7i-flex.large' }}
           STAGING_NODE_MIN_SIZE: ${{ vars.STAGING_NODE_MIN_SIZE || '1' }}
           STAGING_NODE_MAX_SIZE: ${{ vars.STAGING_NODE_MAX_SIZE || '2' }}
           STAGING_NODE_DESIRED_SIZE: ${{ vars.STAGING_NODE_DESIRED_SIZE || '1' }}
@@ -93,21 +178,26 @@ jobs:
           SANDBOX_NODE_MIN_SIZE: ${{ vars['SANDBOX_NODE_MIN_SIZE'] || '1' }}
           SANDBOX_NODE_MAX_SIZE: ${{ vars['SANDBOX_NODE_MAX_SIZE'] || '2' }}
           SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
-          SANDBOX_ALLOWED_BRANCH_PREFIXES: ${{ vars['SANDBOX_ALLOWED_BRANCH_PREFIXES'] || 'feature/,infra/,chore/,platform/' }}
         run: |
           python3 scripts/resolve_workflow_context.py \
             --mode infrastructure \
             --environment "$INPUT_ENVIRONMENT" \
             --action "$INPUT_ACTION" \
+            --pull-request-number "$INPUT_PULL_REQUEST_NUMBER" \
             --ref-name "$REF_NAME" \
             --default-branch "$DEFAULT_BRANCH" \
             --repository-id "$REPOSITORY_ID" \
+            --github-repository "$GITHUB_REPOSITORY_SLUG" \
+            --github-token "$GITHUB_TOKEN" \
+            --git-sha "$GIT_SHA" \
+            --release-tag "$RELEASE_TAG" \
             --input-cluster-name "$INPUT_CLUSTER_NAME" \
             --input-snapshot-bucket-name "$INPUT_SNAPSHOT_BUCKET_NAME" \
             --input-node-instance-type "$INPUT_NODE_INSTANCE_TYPE" \
             --input-node-min-size "$INPUT_NODE_MIN_SIZE" \
             --input-node-max-size "$INPUT_NODE_MAX_SIZE" \
             --input-node-desired-size "$INPUT_NODE_DESIRED_SIZE" \
+            --owner-login "$INPUT_OWNER_LOGIN" \
             --staging-cluster-name "$STAGING_CLUSTER_NAME" \
             --production-cluster-name "$PRODUCTION_CLUSTER_NAME" \
             --sandbox-cluster-prefix "$SANDBOX_CLUSTER_PREFIX" \
@@ -126,7 +216,6 @@ jobs:
             --sandbox-node-min-size "$SANDBOX_NODE_MIN_SIZE" \
             --sandbox-node-max-size "$SANDBOX_NODE_MAX_SIZE" \
             --sandbox-node-desired-size "$SANDBOX_NODE_DESIRED_SIZE" \
-            --sandbox-allowed-branch-prefixes "$SANDBOX_ALLOWED_BRANCH_PREFIXES" \
             --role-sandbox-arn "$AWS_ROLE_SANDBOX_ARN" \
             --role-staging-arn "$AWS_ROLE_STAGING_ARN" \
             --role-production-arn "$AWS_ROLE_PRODUCTION_ARN"
@@ -171,7 +260,7 @@ jobs:
       - name: Extract managed service credentials
         id: runtime-contract
         env:
-          ACTION: ${{ github.event.inputs.action }}
+          ACTION: ${{ inputs.action }}
           ENV_FILE_PATH: ${{ steps.runtime-env.outputs.env_file_path }}
         run: |
           python3 - "$ENV_FILE_PATH" "$ACTION" <<'PY'
@@ -233,6 +322,9 @@ jobs:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
           TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
           TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
           TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
           TF_VAR_node_instance_type: ${{ steps.context.outputs.node_instance_type }}
           TF_VAR_node_min_size: ${{ steps.context.outputs.node_min_size }}
@@ -246,16 +338,54 @@ jobs:
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
-            -backend-config="key=eks/${TF_VAR_cluster_name}.tfstate" \
+            -backend-config="key=${{ steps.context.outputs.terraform_state_key }}" \
             -backend-config="region=${TF_STATE_REGION}"
 
+      - name: Recover orphaned sandbox Helm releases
+        if: inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox'
+        working-directory: terraform/eks
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+        run: |
+          if ! aws eks describe-cluster --region "$TF_VAR_aws_region" --name "$TF_VAR_cluster_name" >/dev/null 2>&1; then
+            echo "Cluster $TF_VAR_cluster_name does not exist yet. Skipping orphaned Helm release cleanup."
+            exit 0
+          fi
+
+          if ! command -v helm >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
+
+          terraform state list > "$RUNNER_TEMP/terraform-state.txt"
+          aws eks update-kubeconfig --region "$TF_VAR_aws_region" --name "$TF_VAR_cluster_name" --alias "$TF_VAR_cluster_name"
+
+          while IFS='|' read -r state_address release_name release_namespace; do
+            if grep -Fxq "$state_address" "$RUNNER_TEMP/terraform-state.txt"; then
+              continue
+            fi
+
+            if helm status "$release_name" -n "$release_namespace" >/dev/null 2>&1; then
+              echo "Uninstalling orphaned Helm release $release_name in namespace $release_namespace before Terraform apply."
+              helm uninstall "$release_name" -n "$release_namespace"
+            fi
+          done <<'EOF'
+          helm_release.argocd|argocd|argocd
+          helm_release.metrics_server|metrics-server|kube-system
+          helm_release.keda[0]|keda|keda
+          helm_release.cluster_autoscaler[0]|cluster-autoscaler|kube-system
+          EOF
+
       - name: Terraform apply
-        if: github.event.inputs.action == 'apply'
+        if: inputs.action == 'apply'
         working-directory: terraform/eks
         env:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
           TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
           TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
           TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
           TF_VAR_node_instance_type: ${{ steps.context.outputs.node_instance_type }}
           TF_VAR_node_min_size: ${{ steps.context.outputs.node_min_size }}
@@ -267,18 +397,143 @@ jobs:
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
         run: terraform apply -auto-approve -input=false
 
+      - name: Dump sandbox ArgoCD diagnostics on failure
+        if: failure() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox'
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+        run: |
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME" --alias "$CLUSTER_NAME"
+
+          echo "===== helm status argocd ====="
+          helm status argocd -n argocd || true
+
+          echo "===== kubectl get pods -n argocd -o wide ====="
+          kubectl get pods -n argocd -o wide || true
+
+          echo "===== kubectl get events -n argocd ====="
+          kubectl get events -n argocd --sort-by=.lastTimestamp || true
+
+          echo "===== kubectl describe pods -n argocd ====="
+          kubectl describe pods -n argocd || true
+
       - name: Show infrastructure outputs
-        if: github.event.inputs.action == 'apply'
+        if: inputs.action == 'apply'
         working-directory: terraform/eks
         run: terraform output
 
+      - name: Mark sandbox as active
+        if: success() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(process.env.PR_NUMBER),
+              labels: ['sandbox-active'],
+            });
+
+      - name: Build sandbox apply PR comment
+        if: success() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
+        working-directory: terraform/eks
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
+          SANDBOX_KEY: ${{ steps.context.outputs.sandbox_key }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          TERRAFORM_STATE_KEY: ${{ steps.context.outputs.terraform_state_key }}
+          SSM_STATE_KEY: ${{ steps.context.outputs.ssm_state_key }}
+          SNAPSHOT_BUCKET_NAME: ${{ steps.context.outputs.snapshot_bucket_name }}
+          ENV_VERSION: ${{ steps.context.outputs.env_version }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          terraform output -json > "$RUNNER_TEMP/eks-outputs.json"
+          CLUSTER_ENDPOINT=$(python3 - "$RUNNER_TEMP/eks-outputs.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          outputs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print(outputs.get("cluster_endpoint", {}).get("value", ""))
+          PY
+          )
+
+          python3 "$GITHUB_WORKSPACE/scripts/render_sandbox_status_comment.py" \
+            --mode apply \
+            --pull-request-number "$PR_NUMBER" \
+            --sandbox-key "$SANDBOX_KEY" \
+            --env-version "$ENV_VERSION" \
+            --cluster-name "$CLUSTER_NAME" \
+            --terraform-state-key "$TERRAFORM_STATE_KEY" \
+            --ssm-state-key "$SSM_STATE_KEY" \
+            --snapshot-bucket-name "$SNAPSHOT_BUCKET_NAME" \
+            --cluster-endpoint "$CLUSTER_ENDPOINT" \
+            --run-url "$RUN_URL" \
+            > "$RUNNER_TEMP/sandbox-status-comment.md"
+
+      - name: Publish sandbox apply PR comment
+        if: success() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
+        uses: actions/github-script@v7
+        env:
+          COMMENT_FILE: ${{ runner.temp }}/sandbox-status-comment.md
+          PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.COMMENT_FILE, 'utf8');
+            const issue_number = Number(process.env.PR_NUMBER);
+            const marker = '<!-- sandbox-lifecycle-status -->';
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find((comment) =>
+              comment.user.type === 'Bot' && comment.body.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                body,
+              });
+            }
+      - name: Cleanup sandbox AWS orphans before destroy
+        if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          ENVIRONMENT_IDENTITY: ${{ steps.context.outputs.environment_identity }}
+        run: |
+          python3 scripts/cleanup_sandbox_aws_orphans.py \
+            --region "$AWS_REGION" \
+            --cluster-name "$CLUSTER_NAME" \
+            --environment-identity "$ENVIRONMENT_IDENTITY"
+
       - name: Terraform destroy
-        if: github.event.inputs.action == 'destroy'
+        if: inputs.action == 'destroy'
         working-directory: terraform/eks
         env:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
           TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
           TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
           TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
           TF_VAR_node_instance_type: ${{ steps.context.outputs.node_instance_type }}
           TF_VAR_node_min_size: ${{ steps.context.outputs.node_min_size }}
@@ -289,3 +544,117 @@ jobs:
           TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
         run: terraform destroy -auto-approve -input=false
+
+      - name: Terraform destroy sandbox SSM parameters
+        if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        working-directory: terraform/ssm
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_environment: ${{ steps.context.outputs.ssm_environment_key }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
+          TF_VAR_env_file_path: ${{ steps.runtime-env.outputs.env_file_path }}
+          TF_VAR_kms_key_id: ${{ vars['SSM_KMS_KEY_ID'] || '' }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=${{ steps.context.outputs.ssm_state_key }}" \
+            -backend-config="region=${TF_STATE_REGION}"
+          terraform destroy -auto-approve -input=false
+
+      - name: Cleanup sandbox AWS orphans after destroy
+        if: always() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          ENVIRONMENT_IDENTITY: ${{ steps.context.outputs.environment_identity }}
+        run: |
+          python3 scripts/cleanup_sandbox_aws_orphans.py \
+            --region "$AWS_REGION" \
+            --cluster-name "$CLUSTER_NAME" \
+            --environment-identity "$ENVIRONMENT_IDENTITY"
+
+      - name: Mark sandbox as inactive
+        if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
+        with:
+          script: |
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number(process.env.PR_NUMBER),
+                name: 'sandbox-active',
+              });
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+
+      - name: Build sandbox destroy PR comment
+        if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
+          SANDBOX_KEY: ${{ steps.context.outputs.sandbox_key }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          ENV_VERSION: ${{ steps.context.outputs.env_version }}
+          TERRAFORM_STATE_KEY: ${{ steps.context.outputs.terraform_state_key }}
+          SSM_STATE_KEY: ${{ steps.context.outputs.ssm_state_key }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/render_sandbox_status_comment.py \
+            --mode destroy \
+            --pull-request-number "$PR_NUMBER" \
+            --sandbox-key "$SANDBOX_KEY" \
+            --env-version "$ENV_VERSION" \
+            --cluster-name "$CLUSTER_NAME" \
+            --terraform-state-key "$TERRAFORM_STATE_KEY" \
+            --ssm-state-key "$SSM_STATE_KEY" \
+            --run-url "$RUN_URL" \
+            > "$RUNNER_TEMP/sandbox-status-comment.md"
+
+      - name: Publish sandbox destroy PR comment
+        if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
+        uses: actions/github-script@v7
+        env:
+          COMMENT_FILE: ${{ runner.temp }}/sandbox-status-comment.md
+          PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.COMMENT_FILE, 'utf8');
+            const issue_number = Number(process.env.PR_NUMBER);
+            const marker = '<!-- sandbox-lifecycle-status -->';
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find((comment) =>
+              comment.user.type === 'Bot' && comment.body.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                body,
+              });
+            }
+
