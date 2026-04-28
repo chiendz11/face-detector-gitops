@@ -1,6 +1,58 @@
 name: Infrastructure Management
 
 on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      action:
+        required: true
+        type: string
+      cluster_name:
+        required: false
+        type: string
+        default: ""
+      snapshot_bucket_name:
+        required: false
+        type: string
+        default: ""
+      node_instance_type:
+        required: false
+        type: string
+        default: ""
+      node_min_size:
+        required: false
+        type: string
+        default: ""
+      node_max_size:
+        required: false
+        type: string
+        default: ""
+      node_desired_size:
+        required: false
+        type: string
+        default: ""
+      pull_request_number:
+        required: false
+        type: string
+        default: ""
+      source_ref_name:
+        required: false
+        type: string
+        default: ""
+      source_git_sha:
+        required: false
+        type: string
+        default: ""
+      owner_login:
+        required: false
+        type: string
+        default: ""
+      sandbox_role_override_arn:
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       environment:
@@ -44,6 +96,26 @@ on:
         description: Optional EKS node group desired size override
         required: false
         default: ""
+      pull_request_number:
+        description: Optional sandbox PR number used for deterministic state when dispatching from the default branch
+        required: false
+        default: ""
+      source_ref_name:
+        description: Optional sandbox PR head branch used when dispatching from the default branch
+        required: false
+        default: ""
+      source_git_sha:
+        description: Optional sandbox PR head commit SHA used for env_version when dispatching from the default branch
+        required: false
+        default: ""
+      owner_login:
+        description: Optional sandbox owner login used for cost-allocation tags
+        required: false
+        default: ""
+      sandbox_role_override_arn:
+        description: Optional sandbox AWS role ARN override reserved for the workflow R&D lane
+        required: false
+        default: ""
 
 jobs:
   infrastructure:
@@ -57,24 +129,39 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.environment == 'sandbox' && inputs.action == 'apply' && (inputs.source_ref_name || github.ref_name) || github.event.repository.default_branch }}
+
+      - name: Reject unsupported manual sandbox workflow refs
+        if: github.event_name == 'workflow_dispatch' && inputs.environment == 'sandbox' && github.ref_name != github.event.repository.default_branch && !startsWith(github.ref_name, 'devops/')
+        run: |
+          echo "Manual sandbox infrastructure runs are allowed only from the default branch or a devops/* branch." >&2
+          echo "Dispatch on ${{ github.event.repository.default_branch }} for rescue, or use a devops/* branch for admin verification." >&2
+          exit 1
 
       - name: Resolve infrastructure context
         id: context
         env:
-          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
-          INPUT_ACTION: ${{ github.event.inputs.action }}
-          REF_NAME: ${{ github.ref_name }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_ACTION: ${{ inputs.action }}
+          INPUT_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          REF_NAME: ${{ inputs.source_ref_name || github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_SLUG: ${{ github.repository }}
           INPUT_CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
           INPUT_SNAPSHOT_BUCKET_NAME: ${{ github.event.inputs.snapshot_bucket_name }}
           INPUT_NODE_INSTANCE_TYPE: ${{ github.event.inputs.node_instance_type }}
           INPUT_NODE_MIN_SIZE: ${{ github.event.inputs.node_min_size }}
           INPUT_NODE_MAX_SIZE: ${{ github.event.inputs.node_max_size }}
           INPUT_NODE_DESIRED_SIZE: ${{ github.event.inputs.node_desired_size }}
-          AWS_ROLE_SANDBOX_ARN: ${{ vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
-          AWS_ROLE_STAGING_ARN: ${{ vars['AWS_ROLE_STAGING_ARN'] || '' }}
-          AWS_ROLE_PRODUCTION_ARN: ${{ vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
+          INPUT_OWNER_LOGIN: ${{ inputs.owner_login }}
+          GIT_SHA: ${{ inputs.source_git_sha || github.sha }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ROLE_SANDBOX_ARN: ${{ inputs.sandbox_role_override_arn || secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
+          AWS_ROLE_STAGING_ARN: ${{ secrets.AWS_ROLE_STAGING_ARN || vars['AWS_ROLE_STAGING_ARN'] || '' }}
+          AWS_ROLE_PRODUCTION_ARN: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
           STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
           PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
           SANDBOX_CLUSTER_PREFIX: ${{ vars['SANDBOX_EKS_CLUSTER_PREFIX'] || 'face-detector-sbx' }}
@@ -98,15 +185,21 @@ jobs:
             --mode infrastructure \
             --environment "$INPUT_ENVIRONMENT" \
             --action "$INPUT_ACTION" \
+            --pull-request-number "$INPUT_PULL_REQUEST_NUMBER" \
             --ref-name "$REF_NAME" \
             --default-branch "$DEFAULT_BRANCH" \
             --repository-id "$REPOSITORY_ID" \
+            --github-repository "$GITHUB_REPOSITORY_SLUG" \
+            --github-token "$GITHUB_TOKEN" \
+            --git-sha "$GIT_SHA" \
+            --release-tag "$RELEASE_TAG" \
             --input-cluster-name "$INPUT_CLUSTER_NAME" \
             --input-snapshot-bucket-name "$INPUT_SNAPSHOT_BUCKET_NAME" \
             --input-node-instance-type "$INPUT_NODE_INSTANCE_TYPE" \
             --input-node-min-size "$INPUT_NODE_MIN_SIZE" \
             --input-node-max-size "$INPUT_NODE_MAX_SIZE" \
             --input-node-desired-size "$INPUT_NODE_DESIRED_SIZE" \
+            --owner-login "$INPUT_OWNER_LOGIN" \
             --staging-cluster-name "$STAGING_CLUSTER_NAME" \
             --production-cluster-name "$PRODUCTION_CLUSTER_NAME" \
             --sandbox-cluster-prefix "$SANDBOX_CLUSTER_PREFIX" \

@@ -1,0 +1,191 @@
+name: Sandbox Workflow R&D
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Workflow R&D sandbox action to run from the selected devops/* branch
+        required: true
+        default: apply
+        type: choice
+        options:
+          - apply
+          - destroy
+      approval_environment:
+        description: Protected environment gate for the workflow R&D lane
+        required: true
+        default: workflow-rd
+        type: environment
+
+concurrency:
+  group: ${{ format('sandbox-workflow-rd-{0}-{1}-{2}', github.actor, github.ref_name, github.event.inputs.action || 'apply') }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      action: ${{ steps.gate.outputs.action }}
+      source_ref_name: ${{ steps.gate.outputs.source_ref_name }}
+      source_git_sha: ${{ steps.gate.outputs.source_git_sha }}
+      owner_login: ${{ steps.gate.outputs.owner_login }}
+      sandbox_role_override_arn: ${{ steps.gate.outputs.sandbox_role_override_arn }}
+    steps:
+      - name: Validate workflow R&D dispatch policy
+        id: gate
+        uses: actions/github-script@v7
+        env:
+          APPROVAL_ENVIRONMENT: ${{ github.event.inputs.approval_environment || '' }}
+          REQUESTED_ACTION: ${{ github.event.inputs.action || 'apply' }}
+        with:
+          script: |
+            const refName = context.ref.replace('refs/heads/', '');
+            if (!refName.startsWith('devops/')) {
+              core.setFailed('Sandbox Workflow R&D may only be dispatched from a devops/* branch.');
+              return;
+            }
+
+            if (process.env.APPROVAL_ENVIRONMENT !== 'workflow-rd') {
+              core.setFailed('Sandbox Workflow R&D must use the protected environment workflow-rd.');
+              return;
+            }
+
+            let allowedActorsJson = '';
+            let workflowRdRoleArn = '';
+            try {
+              const allowedActorsVariable = await github.rest.actions.getRepoVariable({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'WORKFLOW_RD_ALLOWED_ACTORS_JSON',
+              });
+              allowedActorsJson = String(allowedActorsVariable.data.value || '').trim();
+            } catch (error) {
+              core.setFailed(
+                'Repository variable WORKFLOW_RD_ALLOWED_ACTORS_JSON must exist and contain a JSON array of approved GitHub logins before the workflow R&D lane can run.'
+              );
+              return;
+            }
+
+            try {
+              const roleVariable = await github.rest.actions.getRepoVariable({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'AWS_ROLE_WORKFLOW_RD_ARN',
+              });
+              workflowRdRoleArn = String(roleVariable.data.value || '').trim();
+            } catch (error) {
+              core.setFailed(
+                'Repository variable AWS_ROLE_WORKFLOW_RD_ARN must exist before the workflow R&D lane can run.'
+              );
+              return;
+            }
+
+            if (!workflowRdRoleArn) {
+              core.setFailed('Repository variable AWS_ROLE_WORKFLOW_RD_ARN must be set before the workflow R&D lane can run.');
+              return;
+            }
+
+            if (!allowedActorsJson) {
+              core.setFailed(
+                'Repository variable WORKFLOW_RD_ALLOWED_ACTORS_JSON must be set to a JSON array of approved GitHub logins before the workflow R&D lane can run.'
+              );
+              return;
+            }
+
+            let allowedActors;
+            try {
+              allowedActors = JSON.parse(allowedActorsJson);
+            } catch (error) {
+              core.setFailed(`WORKFLOW_RD_ALLOWED_ACTORS_JSON must be valid JSON. ${error.message}`);
+              return;
+            }
+
+            if (!Array.isArray(allowedActors) || allowedActors.length === 0) {
+              core.setFailed('WORKFLOW_RD_ALLOWED_ACTORS_JSON must be a non-empty JSON array of approved GitHub logins.');
+              return;
+            }
+
+            if (!allowedActors.includes(context.actor)) {
+              core.setFailed(
+                `Actor @${context.actor} is not approved for the workflow R&D lane. Allowed actors: ${allowedActors.join(', ')}`
+              );
+              return;
+            }
+
+            core.setOutput('action', process.env.REQUESTED_ACTION);
+            core.setOutput('source_ref_name', refName);
+            core.setOutput('source_git_sha', context.sha);
+            core.setOutput('owner_login', context.actor);
+            core.setOutput('sandbox_role_override_arn', workflowRdRoleArn);
+
+  require-approval:
+    needs: evaluate-policy
+    runs-on: ubuntu-latest
+    permissions: {}
+    environment: ${{ github.event.inputs.approval_environment }}
+    steps:
+      - name: Await workflow R&D environment approval
+        run: echo "Workflow R&D lane approved for @${{ needs.evaluate-policy.outputs.owner_login }} on ${{ needs.evaluate-policy.outputs.source_ref_name }}"
+
+  apply-sandbox:
+    needs:
+      - evaluate-policy
+      - require-approval
+    if: needs.evaluate-policy.outputs.action == 'apply'
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/infrastructure.yml
+    with:
+      environment: sandbox
+      action: apply
+      source_ref_name: ${{ needs.evaluate-policy.outputs.source_ref_name }}
+      source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
+      owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
+      sandbox_role_override_arn: ${{ needs.evaluate-policy.outputs.sandbox_role_override_arn }}
+    secrets: inherit
+
+  bootstrap-sandbox:
+    needs:
+      - evaluate-policy
+      - require-approval
+      - apply-sandbox
+    if: needs.evaluate-policy.outputs.action == 'apply' && needs.apply-sandbox.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+    uses: ./.github/workflows/app-cd.yml
+    with:
+      environment: sandbox
+      git_revision: ${{ needs.evaluate-policy.outputs.source_ref_name }}
+      source_ref_name: ${{ needs.evaluate-policy.outputs.source_ref_name }}
+      source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
+      owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
+      sandbox_role_override_arn: ${{ needs.evaluate-policy.outputs.sandbox_role_override_arn }}
+    secrets: inherit
+
+  destroy-sandbox:
+    needs:
+      - evaluate-policy
+      - require-approval
+    if: needs.evaluate-policy.outputs.action == 'destroy'
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/infrastructure.yml
+    with:
+      environment: sandbox
+      action: destroy
+      source_ref_name: ${{ needs.evaluate-policy.outputs.source_ref_name }}
+      source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
+      owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
+      sandbox_role_override_arn: ${{ needs.evaluate-policy.outputs.sandbox_role_override_arn }}
+    secrets: inherit
