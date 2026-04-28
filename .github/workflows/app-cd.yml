@@ -1,6 +1,35 @@
 name: ArgoCD Bootstrap
 
 on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      cluster_name:
+        required: false
+        type: string
+        default: ""
+      git_revision:
+        required: false
+        type: string
+        default: ""
+      pull_request_number:
+        required: false
+        type: string
+        default: ""
+      source_ref_name:
+        required: false
+        type: string
+        default: ""
+      source_git_sha:
+        required: false
+        type: string
+        default: ""
+      owner_login:
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       environment:
@@ -13,11 +42,27 @@ on:
           - staging
           - production
       cluster_name:
-        description: Optional sandbox EKS cluster name override; leave blank to derive from the selected sandbox branch name
+        description: Deprecated. Sandbox cluster names are derived from the PR number and overrides are rejected.
         required: false
         default: ""
       git_revision:
-        description: Git branch or revision ArgoCD should track; leave blank to use the selected sandbox branch or the default branch for staging and production
+        description: Git branch or revision ArgoCD should track; leave blank to use the selected feature branch for sandbox or the default branch for staging and production
+        required: false
+        default: ""
+      pull_request_number:
+        description: Optional sandbox PR number used for deterministic state when dispatching from the default branch
+        required: false
+        default: ""
+      source_ref_name:
+        description: Optional sandbox PR head branch used when dispatching from the default branch
+        required: false
+        default: ""
+      source_git_sha:
+        description: Optional sandbox PR head commit SHA used for env_version when dispatching from the default branch
+        required: false
+        default: ""
+      owner_login:
+        description: Optional sandbox owner login used for cost-allocation tags
         required: false
         default: ""
 
@@ -27,6 +72,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read
     env:
       AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
       TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
@@ -37,28 +83,42 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.environment == 'sandbox' && (inputs.source_ref_name || github.ref_name) || github.event.repository.default_branch }}
+
+      - name: Reject unsupported manual sandbox workflow refs
+        if: github.event_name == 'workflow_dispatch' && inputs.environment == 'sandbox' && github.ref_name != github.event.repository.default_branch && !startsWith(github.ref_name, 'devops/')
+        run: |
+          echo "Manual sandbox bootstrap runs are allowed only from the default branch or a devops/* branch." >&2
+          echo "Dispatch on ${{ github.event.repository.default_branch }} for rescue, or use a devops/* branch for admin verification." >&2
+          exit 1
 
       - name: Resolve bootstrap context
         id: context
         env:
-          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
-          INPUT_CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
-          INPUT_GIT_REVISION: ${{ github.event.inputs.git_revision }}
-          REF_NAME: ${{ github.ref_name }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_CLUSTER_NAME: ${{ inputs.cluster_name }}
+          INPUT_GIT_REVISION: ${{ inputs.git_revision }}
+          INPUT_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          INPUT_OWNER_LOGIN: ${{ inputs.owner_login }}
+          REF_NAME: ${{ inputs.source_ref_name || github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REPOSITORY_ID: ${{ github.repository_id }}
-          AWS_ROLE_SANDBOX_ARN: ${{ vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
-          AWS_ROLE_STAGING_ARN: ${{ vars['AWS_ROLE_STAGING_ARN'] || '' }}
-          AWS_ROLE_PRODUCTION_ARN: ${{ vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
+          GITHUB_REPOSITORY_SLUG: ${{ github.repository }}
+          GIT_SHA: ${{ inputs.source_git_sha || github.sha }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ROLE_SANDBOX_ARN: ${{ secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
+          AWS_ROLE_STAGING_ARN: ${{ secrets.AWS_ROLE_STAGING_ARN || vars['AWS_ROLE_STAGING_ARN'] || '' }}
+          AWS_ROLE_PRODUCTION_ARN: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
           STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
           PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
           SANDBOX_CLUSTER_PREFIX: ${{ vars['SANDBOX_EKS_CLUSTER_PREFIX'] || 'face-detector-sbx' }}
           STAGING_SNAPSHOT_BUCKET_NAME: ${{ vars.STAGING_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-staging' }}
           PRODUCTION_SNAPSHOT_BUCKET_NAME: ${{ vars.PRODUCTION_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-production' }}
           SANDBOX_SNAPSHOT_BUCKET_PREFIX: ${{ vars['SANDBOX_SNAPSHOT_BUCKET_PREFIX'] || 'face-detector-sbx' }}
-          STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 't3.medium' }}
-          PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 't3.large' }}
-          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 't3.medium' }}
+          STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 'c7i-flex.large' }}
+          PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 'm7i-flex.large' }}
+          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 'c7i-flex.large' }}
           STAGING_NODE_MIN_SIZE: ${{ vars.STAGING_NODE_MIN_SIZE || '1' }}
           STAGING_NODE_MAX_SIZE: ${{ vars.STAGING_NODE_MAX_SIZE || '2' }}
           STAGING_NODE_DESIRED_SIZE: ${{ vars.STAGING_NODE_DESIRED_SIZE || '1' }}
@@ -68,16 +128,21 @@ jobs:
           SANDBOX_NODE_MIN_SIZE: ${{ vars['SANDBOX_NODE_MIN_SIZE'] || '1' }}
           SANDBOX_NODE_MAX_SIZE: ${{ vars['SANDBOX_NODE_MAX_SIZE'] || '2' }}
           SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
-          SANDBOX_ALLOWED_BRANCH_PREFIXES: ${{ vars['SANDBOX_ALLOWED_BRANCH_PREFIXES'] || 'feature/,infra/,chore/,platform/' }}
         run: |
           python3 scripts/resolve_workflow_context.py \
             --mode bootstrap \
             --environment "$INPUT_ENVIRONMENT" \
+            --pull-request-number "$INPUT_PULL_REQUEST_NUMBER" \
             --ref-name "$REF_NAME" \
             --default-branch "$DEFAULT_BRANCH" \
             --repository-id "$REPOSITORY_ID" \
+            --github-repository "$GITHUB_REPOSITORY_SLUG" \
+            --github-token "$GITHUB_TOKEN" \
+            --git-sha "$GIT_SHA" \
+            --release-tag "$RELEASE_TAG" \
             --input-cluster-name "$INPUT_CLUSTER_NAME" \
             --input-git-revision "$INPUT_GIT_REVISION" \
+            --owner-login "$INPUT_OWNER_LOGIN" \
             --staging-cluster-name "$STAGING_CLUSTER_NAME" \
             --production-cluster-name "$PRODUCTION_CLUSTER_NAME" \
             --sandbox-cluster-prefix "$SANDBOX_CLUSTER_PREFIX" \
@@ -96,7 +161,6 @@ jobs:
             --sandbox-node-min-size "$SANDBOX_NODE_MIN_SIZE" \
             --sandbox-node-max-size "$SANDBOX_NODE_MAX_SIZE" \
             --sandbox-node-desired-size "$SANDBOX_NODE_DESIRED_SIZE" \
-            --sandbox-allowed-branch-prefixes "$SANDBOX_ALLOWED_BRANCH_PREFIXES" \
             --role-sandbox-arn "$AWS_ROLE_SANDBOX_ARN" \
             --role-staging-arn "$AWS_ROLE_STAGING_ARN" \
             --role-production-arn "$AWS_ROLE_PRODUCTION_ARN"
@@ -212,6 +276,9 @@ jobs:
         env:
           CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
           ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
           ENV_FILE_PATH: ${{ steps.runtime-env.outputs.env_file_path }}
           TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
           TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
@@ -224,7 +291,7 @@ jobs:
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
-            -backend-config="key=eks/${CLUSTER_NAME}.tfstate" \
+            -backend-config="key=${{ steps.context.outputs.terraform_state_key }}" \
             -backend-config="region=${TF_STATE_REGION}"
 
           terraform output -json > "$RUNNER_TEMP/eks-outputs.json"
@@ -300,13 +367,16 @@ jobs:
         env:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
           TF_VAR_environment: ${{ steps.context.outputs.ssm_environment_key }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
           TF_VAR_env_file_path: ${{ steps.runtime-env.outputs.env_file_path }}
           TF_VAR_kms_key_id: ${{ vars['SSM_KMS_KEY_ID'] || '' }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
-            -backend-config="key=ssm/${TF_VAR_environment}.tfstate" \
+            -backend-config="key=${{ steps.context.outputs.ssm_state_key }}" \
             -backend-config="region=${TF_STATE_REGION}"
           terraform apply -auto-approve -input=false
 
