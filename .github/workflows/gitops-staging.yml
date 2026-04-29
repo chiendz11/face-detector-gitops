@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   promote:
-    if: github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_branch == 'master')
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -53,17 +53,17 @@ jobs:
           IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
         run: |
           python - <<'PY'
-import os
-from pathlib import Path
+          import os
+          from pathlib import Path
 
-import yaml
+          import yaml
 
-path = Path('deploy/helm/face-detector/values-staging.yaml')
-data = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
-for component in ('backend', 'worker', 'frontendAdmin'):
-    data.setdefault(component, {}).setdefault('image', {})['tag'] = os.environ['IMAGE_TAG']
-path.write_text(yaml.safe_dump(data, sort_keys=False), encoding='utf-8')
-PY
+          path = Path('deploy/helm/face-detector/values-staging.yaml')
+          data = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+          for component in ('backend', 'worker', 'frontendAdmin'):
+              data.setdefault(component, {}).setdefault('image', {})['tag'] = os.environ['IMAGE_TAG']
+          path.write_text(yaml.safe_dump(data, sort_keys=False), encoding='utf-8')
+          PY
 
       - name: Commit staging promotion
         if: steps.branch-head.outputs.skip != 'true'

@@ -1,0 +1,77 @@
+name: Sandbox Auto Destroy
+
+on:
+  pull_request_target:
+    types:
+      - closed
+      - converted_to_draft
+      - unlabeled
+    branches:
+      - master
+
+concurrency:
+  group: ${{ format('infrastructure-sandbox-{0}', github.event.pull_request.number) }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate-destroy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should_destroy: ${{ steps.gate.outputs.should_destroy }}
+      pr_number: ${{ steps.gate.outputs.pr_number }}
+      source_ref_name: ${{ steps.gate.outputs.source_ref_name }}
+      source_git_sha: ${{ steps.gate.outputs.source_git_sha }}
+      owner_login: ${{ steps.gate.outputs.owner_login }}
+    steps:
+      - name: Evaluate sandbox destroy policy
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const labels = pr.labels.map((label) => label.name);
+            const sameRepo = pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            const hasActiveSandbox = labels.includes('sandbox-active');
+            const deployLabels = ['deploy-sandbox', 'deploy-preview'];
+            const removedLastDeployLabel =
+              context.payload.action === 'unlabeled' &&
+              deployLabels.includes(context.payload.label?.name || '') &&
+              !deployLabels.some((label) => labels.includes(label));
+            const shouldDestroy = sameRepo && hasActiveSandbox && (
+              context.payload.action === 'closed' ||
+              context.payload.action === 'converted_to_draft' ||
+              removedLastDeployLabel
+            );
+
+            core.setOutput('should_destroy', shouldDestroy ? 'true' : 'false');
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('source_ref_name', pr.head.ref);
+            core.setOutput('source_git_sha', pr.head.sha);
+            core.setOutput('owner_login', pr.user.login);
+
+            if (!sameRepo) {
+              core.info('Skipping sandbox destroy for forked pull requests.');
+            } else if (!hasActiveSandbox) {
+              core.info('Skipping sandbox destroy because the PR is not marked sandbox-active.');
+            }
+
+  destroy-sandbox:
+    needs: evaluate-destroy
+    if: needs.evaluate-destroy.outputs.should_destroy == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/infrastructure.yml
+    with:
+      environment: sandbox
+      action: destroy
+      pull_request_number: ${{ needs.evaluate-destroy.outputs.pr_number }}
+      source_ref_name: ${{ needs.evaluate-destroy.outputs.source_ref_name }}
+      source_git_sha: ${{ needs.evaluate-destroy.outputs.source_git_sha }}
+      owner_login: ${{ needs.evaluate-destroy.outputs.owner_login }}
+    secrets: inherit

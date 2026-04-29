@@ -4,7 +4,6 @@ name: CI Pipeline
 on:
   pull_request:
     branches:
-      - main
       - master
     paths:
       - "backend/**"
@@ -19,7 +18,6 @@ on:
       - ".github/workflows/**"
   push:
     branches:
-      - main
       - master
     paths:
       - "backend/**"

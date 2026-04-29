@@ -201,11 +201,11 @@ Required GitHub secrets for the new flow:
 - `GHCR_USERNAME` (optional; needed only when GHCR images are private)
 - `GHCR_TOKEN` (optional; needed only when GHCR images are private)
 
-Required repository variables for GitHub OIDC role assumption:
+Required GitHub secrets for GitHub OIDC role assumption:
 
-- `AWS_ROLE_SANDBOX_ARN`
-- `AWS_ROLE_STAGING_ARN`
-- `AWS_ROLE_PRODUCTION_ARN`
+- `AWS_ROLE_SANDBOX_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
+- `AWS_ROLE_STAGING_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
+- `AWS_ROLE_PRODUCTION_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
 
 If `STAGING_BACKEND_ENV_FILE` or `PRODUCTION_BACKEND_ENV_FILE` is not set, `ArgoCD Bootstrap` falls back to the committed template under `deploy/runtime/`. For real staging or production deployments, prefer the secret-backed env file so runtime values do not live in Git.
 
@@ -223,7 +223,7 @@ Recommended repository variables for the two-cluster setup:
 
 - `STAGING_EKS_CLUSTER_NAME` (optional; defaults to `face-detector-staging`)
 - `PRODUCTION_EKS_CLUSTER_NAME` (optional; defaults to `face-detector-production`)
-- `SANDBOX_EKS_CLUSTER_PREFIX` (optional; defaults to `face-detector-sbx`, and sandbox cluster names are derived from `feature/*` branch names)
+- `SANDBOX_EKS_CLUSTER_PREFIX` (optional; defaults to `face-detector-sbx`, and sandbox cluster names are derived from the PR number)
 - `STAGING_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-staging`)
 - `PRODUCTION_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-production`)
 - `SANDBOX_SNAPSHOT_BUCKET_PREFIX` (optional; defaults to `face-detector-sbx`)
@@ -234,18 +234,30 @@ Recommended repository variables for the two-cluster setup:
 
 OIDC trust policy templates for the three GitHub roles live under `aws/`, and the full setup checklist is documented in `aws/github-oidc-setup.md`.
 
+The enterprise trust model in this repository is default-branch anchored. Today the repository default branch is still `master`, so the strict reusable workflow references and AWS `job_workflow_ref` strings use `@refs/heads/master`. If you later rename the default branch to `main`, update those pins and trust strings together.
+
 The active workflows are:
 
 - `CI Pipeline`: trunk-based validation on pull requests and pushes to `main` or `master`, plus GHCR image publish on push
-- `Terraform PR Plan`: for `feature/*` pull requests into `main` or `master`, resolves a sandbox name, assumes `Role-Sandbox` through GitHub OIDC, and comments EKS plus SSM plan output back onto the PR
+- `Terraform PR Plan`: a `pull_request_target` parent on `main` or `master` that calls a reusable child workflow, resolves an exact PR sandbox identity, assumes `Role-Sandbox` through GitHub OIDC, and comments EKS plus SSM plan output back onto the PR
 - `GitOps Staging Promotion`: after `CI Pipeline` succeeds on `main` or `master`, commits the exact immutable image SHA into `values-staging.yaml`
 - `GitOps Production Promotion`: when a GitHub Release is published, resolves the release commit SHA and commits it into `values-production.yaml`
-- `ArgoCD Bootstrap`: manually seeds SSM-backed runtime secrets, optional GHCR pull credentials, and the correct ArgoCD Application into the selected cluster, including feature-branch sandbox clusters via `cluster_name` override
-- `Infrastructure Management`: manual `apply` or `destroy` for sandbox EKS infrastructure and manual `apply` for shared staging or production
+- `Sandbox Auto Apply`: the developer-facing `pull_request_target` parent that gates on draft state, deploy label, and quota before calling the reusable infrastructure and bootstrap workflows from the default branch
+- `Sandbox Auto Destroy`: the developer-facing `pull_request_target` parent that tears down `sandbox-active` PR sandboxes on close, convert-to-draft, or final deploy-label removal
+- `Sandbox Janitor`: TTL and nightly cleanup for `sandbox-active` PR sandboxes using the same reusable infrastructure destroy workflow
+- `Sandbox DevOps Verify`: the privileged manual-dispatch lane for `devops/*` branches; the parent workflow can evolve on `devops/*`, but it calls the child infrastructure and bootstrap workflows pinned to the default branch so the AWS trust decision stays anchored on the approved workflow definition
+- `ArgoCD Bootstrap`: reusable bootstrap workflow plus manual rescue entry point for shared environments and sandbox admin recovery
+- `Infrastructure Management`: reusable infrastructure workflow plus manual rescue entry point for sandbox, staging, and production
 
 The promotion workflows commit with `[skip ci]` so GitOps config updates do not trigger an infinite CI rebuild loop.
 
-There is intentionally no automatic per-PR application preview environment in this setup. Infrastructure sandboxes are manual because EKS and RDS are expensive, but `Terraform PR Plan` plus manual sandbox `apply` and `destroy` now provide a controlled feature-branch infrastructure test path.
+There is intentionally no automatic per-PR application preview environment in this setup. The infrastructure sandbox is now an exact-state-per-PR environment with cost gates and janitor cleanup, but it remains tightly controlled because EKS and RDS are expensive.
+
+For the trust boundary, keep the sandbox AWS role limited to `main`, `master`, and `devops/*` trusted refs. Protect `devops/*` with GitHub branch rules, and require DevOps approval for `.github/workflows/*` and `aws/github-oidc-*` through `CODEOWNERS` once you have more than one maintainer. If you want AWS to validate the exact reusable workflow path, not just the trusted ref, you must customize GitHub's OIDC `sub` claim to include `job_workflow_ref` and then match that customized `sub` in AWS. If you later move AWS role ARNs into a GitHub Environment such as `Sandbox-Internal`, update the AWS trust policy to match the environment-based OIDC subject because GitHub changes the default `sub` claim for jobs that reference an environment.
+
+If you are working solo, keep the same separation anyway: use `feature/*` or `dev/*` for app work, and reserve `devops/*` for Terraform, workflow, and OIDC experiments. That keeps your everyday application flow simple while preserving a clean high-risk lane for infrastructure changes.
+
+The dual-track sandbox layout is intentionally split by identity context: developer PR sandboxes use `sandboxes/pr-<number>/...`, while manual DevOps previews use `admin-previews/<owner>/<branch>/...`. The admin deployment identity itself is `admin-<actor>-<branch_hash>`, while the state path keeps the readable owner and branch namespace. That keeps Terraform state and cleanup responsibilities separated between the automatic PR lane and the manual admin lane.
 
 ## Runtime Mapping on EKS
 

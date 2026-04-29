@@ -1,0 +1,5 @@
+# Sensitive workflow, IaC, and AWS trust surfaces
+/.github/workflows/* @chiendz11
+/terraform/ @chiendz11
+/aws/ @chiendz11
+/scripts/ @chiendz11
