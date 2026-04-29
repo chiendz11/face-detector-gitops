@@ -42,6 +42,7 @@ jobs:
           REQUESTED_ACTION: ${{ github.event.inputs.action || 'apply' }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'master' }}
           ALLOWED_ACTORS_JSON: ${{ vars.DEVOPS_ADMIN_ALLOWED_ACTORS_JSON || '' }}
+          ALLOW_SOLO_MODE: ${{ vars['DEVOPS_ADMIN_ALLOW_SOLO_MODE'] || '' }}
         with:
           script: |
             const refName = context.ref.replace('refs/heads/', '');
@@ -75,6 +76,16 @@ jobs:
             if (!Array.isArray(allowedActors) || allowedActors.length === 0) {
               core.setFailed('DEVOPS_ADMIN_ALLOWED_ACTORS_JSON must be a non-empty JSON array of approved GitHub logins.');
               return;
+            }
+
+            const allowSoloMode = ['1', 'true', 'yes', 'on']
+              .includes(String(process.env.ALLOW_SOLO_MODE || '').trim().toLowerCase());
+            const soloModeEnabled = allowSoloMode && allowedActors.length === 1;
+
+            if (allowSoloMode && !soloModeEnabled) {
+              core.warning(
+                'DEVOPS_ADMIN_ALLOW_SOLO_MODE is enabled, but DEVOPS_ADMIN_ALLOWED_ACTORS_JSON contains more than one actor. Peer approval remains required.'
+              );
             }
 
             if (!allowedActors.includes(context.actor)) {
@@ -121,10 +132,16 @@ jobs:
               .map(([reviewer]) => reviewer);
 
             if (approvedReviewers.length === 0) {
+              if (soloModeEnabled) {
+                core.warning(
+                  `Skipping peer approval because DEVOPS_ADMIN_ALLOW_SOLO_MODE is enabled for sole approved actor @${context.actor}.`
+                );
+              } else {
               core.setFailed(
                 `Sandbox DevOps Verify requires an approved review on the open ${refName} pull request by someone other than @${context.actor}.`
               );
               return;
+              }
             }
 
             core.setOutput('action', process.env.REQUESTED_ACTION);
