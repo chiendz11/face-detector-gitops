@@ -128,7 +128,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.environment == 'sandbox' && inputs.action == 'apply' && (inputs.source_ref_name || github.ref_name) || github.event.repository.default_branch }}
+          ref: ${{ inputs.environment == 'sandbox' && inputs.source_ref_name != '' && (inputs.pull_request_number == '' || inputs.action == 'apply' || inputs.sandbox_role_override_arn != '') && inputs.source_ref_name || github.event.repository.default_branch }}
 
       - name: Reject unsupported manual sandbox workflow refs
         if: github.event_name == 'workflow_dispatch' && inputs.environment == 'sandbox' && github.ref_name != github.event.repository.default_branch && !startsWith(github.ref_name, 'devops/')
