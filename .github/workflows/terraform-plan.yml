@@ -1,7 +1,7 @@
 name: Terraform PR Plan
 
 on:
-  pull_request:
+  pull_request_target:
     branches:
       - main
       - master
@@ -12,198 +12,51 @@ on:
       - ".github/workflows/infrastructure.yml"
       - ".github/workflows/app-cd.yml"
       - ".github/workflows/terraform-plan.yml"
+      - ".github/workflows/terraform-plan-reusable.yml"
 
 jobs:
-  plan:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+  evaluate-policy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
-      id-token: write
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-      TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+      pull-requests: read
+    outputs:
+      should_plan: ${{ steps.gate.outputs.should_plan }}
+      pr_number: ${{ steps.gate.outputs.pr_number }}
+      source_ref_name: ${{ steps.gate.outputs.source_ref_name }}
+      source_git_sha: ${{ steps.gate.outputs.source_git_sha }}
+      owner_login: ${{ steps.gate.outputs.owner_login }}
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Detect Terraform plan prerequisites
-        id: prerequisites
-        run: |
-          if [ -d terraform/eks ] && [ -d terraform/ssm ] && [ -f deploy/runtime/backend.staging.env.example ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Skip when Terraform modules are unavailable
-        if: steps.prerequisites.outputs.available != 'true'
-        run: |
-          echo "Terraform PR plan skipped: this branch does not include terraform modules/runtime template yet."
-
-      - name: Resolve sandbox plan context
-        if: steps.prerequisites.outputs.available == 'true'
-        id: context
-        env:
-          REF_NAME: ${{ github.event.pull_request.head.ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          REPOSITORY_ID: ${{ github.repository_id }}
-          AWS_ROLE_SANDBOX_ARN: ${{ vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
-          AWS_ROLE_STAGING_ARN: ${{ vars['AWS_ROLE_STAGING_ARN'] || '' }}
-          AWS_ROLE_PRODUCTION_ARN: ${{ vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
-          STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
-          PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
-          SANDBOX_CLUSTER_PREFIX: ${{ vars['SANDBOX_EKS_CLUSTER_PREFIX'] || 'face-detector-sbx' }}
-          STAGING_SNAPSHOT_BUCKET_NAME: ${{ vars.STAGING_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-staging' }}
-          PRODUCTION_SNAPSHOT_BUCKET_NAME: ${{ vars.PRODUCTION_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-production' }}
-          SANDBOX_SNAPSHOT_BUCKET_PREFIX: ${{ vars['SANDBOX_SNAPSHOT_BUCKET_PREFIX'] || 'face-detector-sbx' }}
-          STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 't3.medium' }}
-          PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 't3.large' }}
-          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 't3.medium' }}
-          STAGING_NODE_MIN_SIZE: ${{ vars.STAGING_NODE_MIN_SIZE || '1' }}
-          STAGING_NODE_MAX_SIZE: ${{ vars.STAGING_NODE_MAX_SIZE || '2' }}
-          STAGING_NODE_DESIRED_SIZE: ${{ vars.STAGING_NODE_DESIRED_SIZE || '1' }}
-          PRODUCTION_NODE_MIN_SIZE: ${{ vars.PRODUCTION_NODE_MIN_SIZE || '2' }}
-          PRODUCTION_NODE_MAX_SIZE: ${{ vars.PRODUCTION_NODE_MAX_SIZE || '6' }}
-          PRODUCTION_NODE_DESIRED_SIZE: ${{ vars.PRODUCTION_NODE_DESIRED_SIZE || '2' }}
-          SANDBOX_NODE_MIN_SIZE: ${{ vars['SANDBOX_NODE_MIN_SIZE'] || '1' }}
-          SANDBOX_NODE_MAX_SIZE: ${{ vars['SANDBOX_NODE_MAX_SIZE'] || '2' }}
-          SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
-          SANDBOX_ALLOWED_BRANCH_PREFIXES: ${{ vars['SANDBOX_ALLOWED_BRANCH_PREFIXES'] || 'feature/,infra/,chore/,platform/' }}
-        run: |
-          python3 scripts/resolve_workflow_context.py \
-            --mode plan \
-            --environment sandbox \
-            --action plan \
-            --ref-name "$REF_NAME" \
-            --default-branch "$DEFAULT_BRANCH" \
-            --repository-id "$REPOSITORY_ID" \
-            --staging-cluster-name "$STAGING_CLUSTER_NAME" \
-            --production-cluster-name "$PRODUCTION_CLUSTER_NAME" \
-            --sandbox-cluster-prefix "$SANDBOX_CLUSTER_PREFIX" \
-            --staging-snapshot-bucket-name "$STAGING_SNAPSHOT_BUCKET_NAME" \
-            --production-snapshot-bucket-name "$PRODUCTION_SNAPSHOT_BUCKET_NAME" \
-            --sandbox-snapshot-bucket-prefix "$SANDBOX_SNAPSHOT_BUCKET_PREFIX" \
-            --staging-node-instance-type "$STAGING_NODE_INSTANCE_TYPE" \
-            --production-node-instance-type "$PRODUCTION_NODE_INSTANCE_TYPE" \
-            --sandbox-node-instance-type "$SANDBOX_NODE_INSTANCE_TYPE" \
-            --staging-node-min-size "$STAGING_NODE_MIN_SIZE" \
-            --staging-node-max-size "$STAGING_NODE_MAX_SIZE" \
-            --staging-node-desired-size "$STAGING_NODE_DESIRED_SIZE" \
-            --production-node-min-size "$PRODUCTION_NODE_MIN_SIZE" \
-            --production-node-max-size "$PRODUCTION_NODE_MAX_SIZE" \
-            --production-node-desired-size "$PRODUCTION_NODE_DESIRED_SIZE" \
-            --sandbox-node-min-size "$SANDBOX_NODE_MIN_SIZE" \
-            --sandbox-node-max-size "$SANDBOX_NODE_MAX_SIZE" \
-            --sandbox-node-desired-size "$SANDBOX_NODE_DESIRED_SIZE" \
-            --sandbox-allowed-branch-prefixes "$SANDBOX_ALLOWED_BRANCH_PREFIXES" \
-            --role-sandbox-arn "$AWS_ROLE_SANDBOX_ARN" \
-            --role-staging-arn "$AWS_ROLE_STAGING_ARN" \
-            --role-production-arn "$AWS_ROLE_PRODUCTION_ARN"
-
-      - name: Configure AWS credentials
-        if: steps.prerequisites.outputs.available == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Evaluate sandbox plan policy
+        id: gate
+        uses: actions/github-script@v7
         with:
-          role-to-assume: ${{ steps.context.outputs.aws_role_arn }}
-          role-session-name: gha-pr-plan-${{ github.run_id }}
-          aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          script: |
+            const pr = context.payload.pull_request;
+            const sameRepo = pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
 
-      - name: Set up Terraform
-        if: steps.prerequisites.outputs.available == 'true'
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.6.6"
+            core.setOutput('should_plan', sameRepo ? 'true' : 'false');
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('source_ref_name', pr.head.ref);
+            core.setOutput('source_git_sha', pr.head.sha);
+            core.setOutput('owner_login', pr.user.login);
 
-      - name: Materialize backend runtime env file
-        if: steps.prerequisites.outputs.available == 'true'
-        id: runtime-env
-        env:
-          SANDBOX_BACKEND_ENV_FILE: ${{ secrets['SANDBOX_BACKEND_ENV_FILE'] }}
-          STAGING_BACKEND_ENV_FILE: ${{ secrets.STAGING_BACKEND_ENV_FILE }}
-        run: |
-          TEMPLATE_PATH="$GITHUB_WORKSPACE/deploy/runtime/backend.staging.env.example"
-          OUTPUT_PATH="$RUNNER_TEMP/backend-runtime.sandbox.env"
+            if (!sameRepo) {
+              core.info('Skipping terraform sandbox plan for forked pull requests.');
+            }
 
-          if [ -n "$SANDBOX_BACKEND_ENV_FILE" ]; then
-            ENV_CONTENT="$SANDBOX_BACKEND_ENV_FILE"
-          else
-            ENV_CONTENT="$STAGING_BACKEND_ENV_FILE"
-          fi
-
-          if [ -n "$ENV_CONTENT" ]; then
-            printf '%s\n' "$ENV_CONTENT" > "$OUTPUT_PATH"
-          else
-            cat "$TEMPLATE_PATH" > "$OUTPUT_PATH"
-          fi
-
-          echo "env_file_path=$OUTPUT_PATH" >> "$GITHUB_OUTPUT"
-
-      - name: Extract managed service credentials
-        if: steps.prerequisites.outputs.available == 'true'
-        id: runtime-contract
-        env:
-          ENV_FILE_PATH: ${{ steps.runtime-env.outputs.env_file_path }}
-        run: |
-          python3 - "$ENV_FILE_PATH" <<'PY'
-          import os
-          import sys
-          from pathlib import Path
-
-          env_path = Path(sys.argv[1])
-          entries = {}
-
-          for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-              line = raw_line.strip()
-              if not line or line.startswith("#") or "=" not in raw_line:
-                  continue
-              key, value = raw_line.split("=", 1)
-              entries[key.strip()] = value.strip()
-
-          required = {
-              "POSTGRES_DB": entries.get("POSTGRES_DB", ""),
-              "POSTGRES_USER": entries.get("POSTGRES_USER", ""),
-              "POSTGRES_PASSWORD": entries.get("POSTGRES_PASSWORD", ""),
-              "REDIS_PASSWORD": entries.get("REDIS_PASSWORD", ""),
-          }
-
-          missing = [key for key, value in required.items() if not value]
-          if missing:
-              raise SystemExit(f"Missing required backend runtime keys: {', '.join(missing)}")
-
-          github_output = Path(os.environ["GITHUB_OUTPUT"])
-          with github_output.open("a", encoding="utf-8") as handle:
-              for key, value in {
-                  "db_name": required["POSTGRES_DB"],
-                  "db_username": required["POSTGRES_USER"],
-                  "db_password": required["POSTGRES_PASSWORD"],
-                  "redis_auth_token": required["REDIS_PASSWORD"],
-              }.items():
-                  handle.write(f"{key}<<EOF\n{value}\nEOF\n")
-          PY
-
-      - name: Terraform plan for EKS sandbox
-        if: steps.prerequisites.outputs.available == 'true'
-        id: eks-plan
-        working-directory: terraform/eks
-        env:
-          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-          TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
-          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
-          TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
-          TF_VAR_node_instance_type: ${{ steps.context.outputs.node_instance_type }}
-          TF_VAR_node_min_size: ${{ steps.context.outputs.node_min_size }}
-          TF_VAR_node_max_size: ${{ steps.context.outputs.node_max_size }}
-          TF_VAR_node_desired_size: ${{ steps.context.outputs.node_desired_size }}
-          TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
-          TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
-          TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
-          TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
-        run: |
-          terraform init -input=false \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+  plan:
+    runs-on: ubuntu-latest
+>>>>>>> origin/master
+    permissions:
+      contents: read
+      id-token: write
+<<<<<<< HEAD
+    uses: ./.github/workflows/terraform-plan-reusable.yml
+    with:
+      pull_request_number: ${{ needs.evaluate-policy.outputs.pr_number }}
+      source_ref_name: ${{ needs.evaluate-policy.outputs.source_ref_name }}
+      source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
             -backend-config="key=eks/${TF_VAR_cluster_name}.tfstate" \
             -backend-config="region=${TF_STATE_REGION}"
 
@@ -350,3 +203,4 @@ jobs:
             echo "One or more terraform plan steps failed." >&2
             exit 1
           fi
+>>>>>>> origin/master

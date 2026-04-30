@@ -49,6 +49,10 @@ on:
         required: false
         type: string
         default: ""
+      sandbox_role_override_arn:
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       environment:
@@ -108,6 +112,10 @@ on:
         description: Optional sandbox owner login used for cost-allocation tags
         required: false
         default: ""
+      sandbox_role_override_arn:
+        description: Optional sandbox AWS role ARN override reserved for the workflow R&D lane
+        required: false
+        default: ""
 
 concurrency:
   group: ${{ inputs.environment == 'sandbox' && format('infrastructure-sandbox-{0}', inputs.pull_request_number || format('{0}-{1}', inputs.owner_login || 'admin', inputs.source_ref_name || github.ref_name)) || format('infrastructure-{0}', inputs.environment) }}
@@ -157,7 +165,11 @@ jobs:
           GIT_SHA: ${{ inputs.source_git_sha || github.sha }}
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           GITHUB_TOKEN: ${{ github.token }}
-          AWS_ROLE_SANDBOX_ARN: ${{ secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
+          AWS_ROLE_SANDBOX_ARN: ${{ inputs.sandbox_role_override_arn || secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
+<<<<<<< HEAD
+          AWS_ROLE_SANDBOX_ARN: ${{ inputs.sandbox_role_override_arn || secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
+=======
+>>>>>>> origin/devops/workflow-rd
           AWS_ROLE_STAGING_ARN: ${{ secrets.AWS_ROLE_STAGING_ARN || vars['AWS_ROLE_STAGING_ARN'] || '' }}
           AWS_ROLE_PRODUCTION_ARN: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
           STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
@@ -512,6 +524,10 @@ jobs:
                 body,
               });
             }
+<<<<<<< HEAD
+
+=======
+>>>>>>> origin/master
       - name: Cleanup sandbox AWS orphans before destroy
         if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
         env:
@@ -524,6 +540,10 @@ jobs:
             --cluster-name "$CLUSTER_NAME" \
             --environment-identity "$ENVIRONMENT_IDENTITY"
 
+<<<<<<< HEAD
+      - name: Terraform destroy
+        if: inputs.action == 'destroy'
+=======
       - name: Pre-clean sandbox application namespace before destroy
         if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
         env:
@@ -622,6 +642,7 @@ jobs:
         id: terraform_destroy_initial
         if: inputs.action == 'destroy'
         continue-on-error: true
+>>>>>>> origin/master
         working-directory: terraform/eks
         env:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
@@ -641,6 +662,8 @@ jobs:
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
         run: terraform destroy -auto-approve -input=false
 
+<<<<<<< HEAD
+=======
       - name: Cleanup sandbox AWS orphans after destroy
         if: always() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
         env:
@@ -683,6 +706,7 @@ jobs:
           )
         run: exit 1
 
+>>>>>>> origin/master
       - name: Terraform destroy sandbox SSM parameters
         if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
         working-directory: terraform/ssm
@@ -702,6 +726,19 @@ jobs:
             -backend-config="region=${TF_STATE_REGION}"
           terraform destroy -auto-approve -input=false
 
+<<<<<<< HEAD
+      - name: Cleanup sandbox AWS orphans after destroy
+        if: always() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          ENVIRONMENT_IDENTITY: ${{ steps.context.outputs.environment_identity }}
+        run: |
+          python3 scripts/cleanup_sandbox_aws_orphans.py \
+            --region "$AWS_REGION" \
+            --cluster-name "$CLUSTER_NAME" \
+            --environment-identity "$ENVIRONMENT_IDENTITY"
+=======
       - name: Verify sandbox destroy convergence
         if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
         env:
@@ -908,6 +945,7 @@ jobs:
               raise SystemExit(1)
           PY
 
+>>>>>>> origin/master
 
       - name: Mark sandbox as inactive
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
@@ -928,6 +966,10 @@ jobs:
                 throw error;
               }
             }
+<<<<<<< HEAD
+
+=======
+>>>>>>> origin/master
       - name: Build sandbox destroy PR comment
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
         env:

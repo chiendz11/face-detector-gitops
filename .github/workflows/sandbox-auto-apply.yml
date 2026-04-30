@@ -1,0 +1,146 @@
+name: Sandbox Auto Apply
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - labeled
+    branches:
+      - master
+
+concurrency:
+  group: ${{ format('sandbox-auto-apply-{0}', github.event.pull_request.head.ref) }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should_apply: ${{ steps.gate.outputs.should_apply }}
+      owner_login: ${{ steps.gate.outputs.owner_login }}
+      pr_number: ${{ steps.gate.outputs.pr_number }}
+      source_ref_name: ${{ steps.gate.outputs.source_ref_name }}
+      source_git_sha: ${{ steps.gate.outputs.source_git_sha }}
+    steps:
+      - name: Evaluate sandbox deployment policy
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const allowedLabels = ['deploy-sandbox', 'deploy-preview'];
+            const pr = context.payload.pull_request;
+            const labels = pr.labels.map((label) => label.name);
+            const hasDeployLabel = allowedLabels.some((label) => labels.includes(label));
+            const sameRepo = pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            const isDevopsBranch = pr.head.ref.startsWith('devops/');
+            const shouldApply = sameRepo && !isDevopsBranch && !pr.draft && hasDeployLabel;
+
+            core.setOutput('should_apply', shouldApply ? 'true' : 'false');
+            core.setOutput('owner_login', pr.user.login);
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('source_ref_name', pr.head.ref);
+            core.setOutput('source_git_sha', pr.head.sha);
+
+            if (!sameRepo) {
+              core.info('Skipping sandbox auto-apply for forked pull requests.');
+            } else if (isDevopsBranch) {
+              core.info('Skipping developer sandbox flow for devops/* branches.');
+            } else if (pr.draft) {
+              core.info('Skipping sandbox auto-apply because the PR is still a draft.');
+            } else if (!hasDeployLabel) {
+              core.info('Skipping sandbox auto-apply because no deploy label is present.');
+            }
+
+  enforce-quota:
+    needs: evaluate-policy
+    if: needs.evaluate-policy.outputs.should_apply == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Enforce one sandbox per owner
+        uses: actions/github-script@v7
+        env:
+          OWNER_LOGIN: ${{ needs.evaluate-policy.outputs.owner_login }}
+          PR_NUMBER: ${{ needs.evaluate-policy.outputs.pr_number }}
+        with:
+          script: |
+            const allPulls = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            const conflictingPulls = allPulls.filter((pull) => {
+              if (String(pull.number) === process.env.PR_NUMBER) {
+                return false;
+              }
+
+              if (pull.user.login !== process.env.OWNER_LOGIN) {
+                return false;
+              }
+
+              if (pull.draft) {
+                return false;
+              }
+
+              if (pull.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+                return false;
+              }
+
+              const labels = pull.labels.map((label) => label.name);
+              return labels.includes('sandbox-active');
+            });
+
+            if (conflictingPulls.length > 0) {
+              core.setFailed(
+                `Sandbox quota exceeded for @${process.env.OWNER_LOGIN}. Active sandbox PRs: ${conflictingPulls.map((pull) => `#${pull.number}`).join(', ')}`
+              );
+            }
+
+  apply-infrastructure:
+    needs:
+      - evaluate-policy
+      - enforce-quota
+    if: needs.evaluate-policy.outputs.should_apply == 'true' && needs.enforce-quota.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/infrastructure.yml
+    with:
+      environment: sandbox
+      action: apply
+      pull_request_number: ${{ needs.evaluate-policy.outputs.pr_number }}
+      source_ref_name: ${{ needs.evaluate-policy.outputs.source_ref_name }}
+      source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
+      owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
+    secrets: inherit
+
+  bootstrap-sandbox:
+    needs:
+      - evaluate-policy
+      - apply-infrastructure
+    if: needs.evaluate-policy.outputs.should_apply == 'true' && needs.apply-infrastructure.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+    uses: ./.github/workflows/app-cd.yml
+    with:
+      environment: sandbox
+      git_revision: ${{ needs.evaluate-policy.outputs.source_ref_name }}
+      pull_request_number: ${{ needs.evaluate-policy.outputs.pr_number }}
+      source_ref_name: ${{ needs.evaluate-policy.outputs.source_ref_name }}
+      source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
+      owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
+    secrets: inherit

@@ -1,0 +1,32 @@
+backend:
+  replicaCount: 1
+  image:
+    tag: 129eccbfc31ff3b6e86833acb17a93f9d8fcc591
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 40
+
+worker:
+  replicaCount: 1
+  image:
+    tag: 129eccbfc31ff3b6e86833acb17a93f9d8fcc591
+  autoscaling:
+    keda:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 3
+      pollingIntervalSeconds: 15
+      cooldownPeriodSeconds: 120
+      queue:
+        targetLength: 2
+        activationLength: 1
+        enableTLS: true
+
+frontendAdmin:
+  image:
+    tag: 129eccbfc31ff3b6e86833acb17a93f9d8fcc591
+
+nginx:
+  replicaCount: 1

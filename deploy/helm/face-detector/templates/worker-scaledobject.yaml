@@ -1,0 +1,32 @@
+{{- if and .Values.worker.enabled .Values.worker.autoscaling.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: face-detector
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    name: worker
+    envSourceContainerName: worker
+  pollingInterval: {{ .Values.worker.autoscaling.keda.pollingIntervalSeconds }}
+  cooldownPeriod: {{ .Values.worker.autoscaling.keda.cooldownPeriodSeconds }}
+  minReplicaCount: {{ .Values.worker.autoscaling.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.worker.autoscaling.keda.maxReplicas }}
+  triggers:
+    - type: redis
+      metadata:
+        addressFromEnv: {{ .Values.worker.autoscaling.keda.queue.addressEnvName | quote }}
+        listName: {{ .Values.worker.autoscaling.keda.queue.listName | quote }}
+        listLength: {{ .Values.worker.autoscaling.keda.queue.targetLength | quote }}
+        activationListLength: {{ .Values.worker.autoscaling.keda.queue.activationLength | quote }}
+        databaseIndex: {{ .Values.worker.autoscaling.keda.queue.databaseIndex | quote }}
+        enableTLS: {{ ternary "true" "false" .Values.worker.autoscaling.keda.queue.enableTLS | quote }}
+{{- if .Values.worker.autoscaling.keda.queue.usernameEnvName }}
+        usernameFromEnv: {{ .Values.worker.autoscaling.keda.queue.usernameEnvName | quote }}
+{{- end }}
+{{- if .Values.worker.autoscaling.keda.queue.passwordEnvName }}
+        passwordFromEnv: {{ .Values.worker.autoscaling.keda.queue.passwordEnvName | quote }}
+{{- end }}
+{{- end }}

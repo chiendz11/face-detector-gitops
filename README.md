@@ -2,8 +2,9 @@
 
 This repository is a practical starter architecture for a face-recognition
 access-control system in a small company. The target scenario is realistic:
-fewer than 100 employees, one or a few entrance gates, one VPS for server-side
-services, and one or more local edge devices near the cameras.
+fewer than 100 employees, one or a few entrance gates, one small server-side
+environment managed either with Docker Compose or EKS, and one or more local
+edge devices near the cameras.
 
 ## Deployment Model
 
@@ -14,13 +15,15 @@ services, and one or more local edge devices near the cameras.
 - `frontend-admin/`: admin panel for employee enrollment, threshold tuning,
   role management, and audit review. It is served at `/admin/`.
 - `nginx/`: reverse proxy that exposes `/admin/` and `/api/`.
-- `docker-compose.yml`: VPS stack.
+- `docker-compose.yml`: local or single-server stack.
 - `docker-compose.edge.yml`: edge-device stack.
+- `deploy/`: Helm chart plus ArgoCD applications for GitOps deployments.
+- `terraform/`: AWS bootstrap, EKS, and SSM state management.
 
 ## Why This Architecture Is Practical
 
-For a company with fewer than 100 employees, you usually do not need
-Kubernetes. The real challenges are:
+For a company with fewer than 100 employees, you usually do not need a large
+platform footprint. The real challenges are:
 
 - stable camera input
 - accurate face detection and cropping
@@ -28,25 +31,32 @@ Kubernetes. The real challenges are:
 - reliable audit logging
 - backup and recoverability
 
-A single VPS is enough for:
+A single small local environment is often enough for:
 
 - backend API
 - worker
 - Postgres
-- Qdrant
 - MinIO
 - Redis
 - nginx
 
+For AWS staging and production, the practical target is different:
+
+- EKS runs only stateless workloads such as `backend`, `worker`, `frontend-admin`, and `nginx`
+- PostgreSQL lives outside the cluster
+- Redis or Valkey lives outside the cluster
+- Amazon S3 is the primary object store
+- autoscaling happens on stateless pods, not on data stores inside Kubernetes
+
 ## Runtime Topology
 
-### VPS side
+### Server side
 
 - `nginx` listens on port `80`
 - `/admin/` routes to `frontend-admin`
 - `/api/` routes to `backend`
-- `backend` talks to Postgres, Qdrant, MinIO, and Redis
-- `worker` runs background jobs such as re-indexing or batch enrollment
+- `backend` talks to external PostgreSQL, external Redis or Valkey, and S3
+- `worker` consumes async jobs from external Redis or Valkey and can scale independently from the API
 
 ### Edge side
 
@@ -55,13 +65,25 @@ A single VPS is enough for:
 - crops are sent to `POST /api/vision/recognize`
 - the kiosk UI confirms pass, fail, or retry
 
+## Camera And Event Flow
+
+- camera and raw video stay on the edge device in the current design
+- the edge client detects faces locally and uploads only cropped JPEG payloads to the backend over HTTP
+- `Redis` and `Celery` are the current async event mechanism for background work such as re-indexing or batch jobs
+- there is intentionally no centralized video streaming pipeline or Kafka event bus yet, because the current workload does not need multi-consumer replayable event streams
+- revisit centralized streaming only when many cameras, centralized live monitoring, or multiple downstream event consumers justify the extra platform cost
+
 ## Current Structure
 
 ```text
 project-root/
 |-- .github/
 |   `-- workflows/
-|       `-- deploy.yml
+|       |-- ci.yml
+|       |-- gitops-staging.yml
+|       |-- gitops-production.yml
+|       |-- app-cd.yml
+|       `-- infrastructure.yml
 |-- backend/
 |-- frontend-admin/
 |-- edge-client/
@@ -69,18 +91,23 @@ project-root/
 |-- docker-compose.yml
 |-- docker-compose.edge.yml
 |-- .env.example
+|-- deploy/runtime/
+|   |-- backend.staging.env.example
+|   `-- backend.production.env.example
+|-- edge-client/
+|   `-- .env.example
 `-- README.md
 ```
 
 ## URL Layout
 
-- `http://your-vps-domain/admin/`: admin frontend
-- `http://your-vps-domain/api/health`: backend health
+- `http://your-server-domain/admin/`: admin frontend
+- `http://your-server-domain/api/health`: backend health
 - `edge-client`: entrance kiosk flow
 
 ## Run With Docker
 
-### VPS stack
+### Server stack
 
 ```bash
 docker compose up -d --build
@@ -93,7 +120,6 @@ This starts:
 - `frontend-admin`
 - `nginx`
 - `db`
-- `vector-db`
 - `minio`
 - `redis`
 
@@ -107,132 +133,167 @@ This starts:
 
 - `edge-client`
 
-## Deploying to an AWS VPS
-
-Use the helper scripts in `scripts/` to SSH into the instance and manage deployment.
-
-1. Create or confirm your SSH key locally and set environment variables:
-
-```bash
-export VPS_HOST=your-vps-ip-or-hostname
-export VPS_USER=ubuntu
-export SSH_KEY_PATH=~/.ssh/your-aws-key.pem
-```
-
-2. Connect to your VPS:
-
-```bash
-bash scripts/ssh-to-vps.sh
-```
-
-3. Install Docker and Docker Compose on Ubuntu:
-
-```bash
-VPS_HOST=your-vps-ip VPS_USER=ubuntu SSH_KEY_PATH=~/.ssh/your-aws-key.pem bash scripts/setup-vps.sh
-```
-
-4. Deploy the repo and start services:
-
-```bash
-VPS_HOST=your-vps-ip VPS_USER=ubuntu SSH_KEY_PATH=~/.ssh/your-aws-key.pem bash scripts/deploy-to-vps.sh
-```
-
-This repo also supports a GitHub Container Registry deployment flow with separate staging and production environments.
-
-- `staging` deploys from `main` branch to `/home/ubuntu/face-detector-staging`
-- `production` deploys manually via workflow dispatch to `/home/ubuntu/face-detector` or `/home/ubuntu/face-detector-canary`
-- Both workflows use `docker-compose.ghcr.yml` and can pull backend/frontend/edge images from GHCR
+This repo now supports an AWS EKS deployment flow driven by Terraform, Helm, and ArgoCD.
 
 ## AWS cloud deployment guidance
 
-For AWS cloud production, the preferred direction is:
+The current preferred runtime model is:
 
-- `AWS RDS` for PostgreSQL with `pgvector` to store employee records and face embeddings
-- `AWS S3` for original employee images and snapshots
-- `AWS EC2` to run the Dockerized backend, frontend, and nginx services
-- `AWS SSM Parameter Store` to keep environment secrets out of source control
+- `Terraform` to create and destroy AWS infrastructure on demand
+- `Amazon EKS` for the Kubernetes control plane and worker nodes
+- `GitHub Container Registry (GHCR)` as the single image registry for backend, frontend-admin, and edge images
+- `Helm` for packaging the application stack
+- `ArgoCD` for continuous reconciliation inside the cluster
+- `AWS SSM Parameter Store` for application environment values
+- `AWS S3` for archived snapshots and backups
 
-This repo currently scaffolds the deployment flow and secret injection; the next step is to replace local service dependencies with cloud-managed equivalents.
+The repository keeps the application state in Git and the runtime secrets in SSM, while GitHub Actions bridges the two.
 
-### Recommended runtime mapping
+## Staging and Production Shape
 
-- `DATABASE_URL`: connect to RDS Postgres with the `vector` extension enabled
-- `DATABASE_REPLICA_URLS`: optional comma-separated read-replica URLs for higher availability and read scaling
-- `AWS_S3_BUCKET` + `AWS_S3_REGION`: store raw employee photos and snapshots in S3
-- `EMBEDDING_DIMENSIONS`: configure `pgvector` vector length to match your model
-- `QDRANT_URL` / `MINIO_*`: remain available for local development, but production should use remote cloud services
-- `AWS_S3_BUCKET` / `AWS_S3_REGION`: archive and backup large files to Amazon S3 while MinIO can remain a fast local cache
+| Component | Staging | Production |
+| --- | --- | --- |
+| Compute | EKS, typically 1-2 nodes with reactive headroom | EKS |
+| API | HPA, typically 1 -> 3 pods | HPA, typically 2 -> 20 pods |
+| Worker | KEDA, typically 1 -> 3 pods | KEDA, production envelope |
+| Database | small RDS PostgreSQL | RDS PostgreSQL Multi-AZ |
+| Queue | external Redis or Valkey | external Redis or Valkey with HA |
+| Storage | S3 | S3 |
+| Edge AI | fake or replayed data | real edge devices |
+| Complexity | production-like behavior at low scale | higher |
 
-> Note: The backend class `VectorSearchService` is a vector-search abstraction. In the current cloud design it can use PostgreSQL + `pgvector` instead of a standalone Qdrant process.
+This repository currently keeps staging and production on the same GitOps + EKS toolchain so promotion, ArgoCD, and runtime secrets behave the same. If you later collapse staging to ECS or EC2, keep the same external `DATABASE_URL`, `REDIS_URL`, and `AWS_S3_BUCKET` contract.
 
-## Hybrid storage architecture (MinIO + S3)
+## Cost-saving workflow
 
-This code now supports a hybrid storage model:
+The recommended student/lab workflow is:
 
-- MinIO local store for fast writes and low-latency access
-- Amazon S3 for backup, archive, versioning, and long-term retention
+1. run `Infrastructure Management` with `environment=staging` or `environment=production` to create the target VPC, EKS cluster, S3 bucket, and ArgoCD
+2. keep working normally with trunk-based CI on pull requests and merges to `main` or `master`
+3. let `GitOps Staging Promotion` write the successful CI commit SHA into `deploy/helm/face-detector/values-staging.yaml`
+4. create a GitHub Release when you want production promotion, and let `GitOps Production Promotion` write the release commit SHA into `deploy/helm/face-detector/values-production.yaml`
+5. run `ArgoCD Bootstrap` whenever a cluster is recreated or brought back online so SSM values, runtime secrets, and the correct environment-specific ArgoCD Application are seeded into that cluster
+6. run `Infrastructure Management` with `destroy` when you are done for the day
 
-To enable hybrid mode, keep local MinIO running and set `AWS_S3_BUCKET`/`AWS_S3_REGION` in your environment. The snapshot upload path will still use MinIO as the local store, while a copy is also persisted to S3.
+This keeps the expensive EKS environment disposable without forcing stateful data stores back into the cluster. That is a lab cost-control choice, not the application elasticity model: while a cluster is running, scaling should be reactive through HPA, KEDA, and cluster-autoscaler rather than driven by a business-hours schedule.
+
+## Terraform layout
+
+- `terraform/bootstrap`: one-time remote-state bootstrap for the S3 state bucket and DynamoDB lock table
+- `terraform/eks`: EKS, VPC, private data subnets, managed PostgreSQL, managed Redis, S3 snapshot bucket, namespaces, ArgoCD, metrics-server, KEDA, and cluster-autoscaler defaults for both staging and production
+- `terraform/ssm`: sync backend runtime env files into `/facedetector/<environment>/...`
+
+> The `terraform/eks` and `terraform/ssm` modules are configured for an S3 remote backend. Create the backend bucket and lock table once with `terraform/bootstrap`, then use those names as `TF_STATE_BUCKET` and `TF_STATE_LOCK_TABLE` in GitHub secrets.
+
+## GitHub Actions flow
+
+Required GitHub secrets for the new flow:
+
+- `AWS_REGION` (optional; defaults to `ap-southeast-1`)
+- `TF_STATE_BUCKET`
+- `TF_STATE_LOCK_TABLE`
+- `TF_STATE_REGION` (optional; defaults to `AWS_REGION`, but set it explicitly when the Terraform state bucket lives in another region)
+- `STAGING_BACKEND_ENV_FILE` (optional but recommended; multiline backend runtime env file for staging)
+- `PRODUCTION_BACKEND_ENV_FILE` (optional but recommended; multiline backend runtime env file for production)
+- `SANDBOX_BACKEND_ENV_FILE` (optional; when unset, sandbox workflows reuse the staging runtime contract)
+- `ARGOCD_REPO_USERNAME` (optional; needed when the GitHub repository is private)
+- `ARGOCD_REPO_TOKEN` (optional; needed when the GitHub repository is private)
+- `GHCR_USERNAME` (optional; needed only when GHCR images are private)
+- `GHCR_TOKEN` (optional; needed only when GHCR images are private)
+
+Required GitHub secrets for GitHub OIDC role assumption:
+
+- `AWS_ROLE_SANDBOX_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
+- `AWS_ROLE_STAGING_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
+- `AWS_ROLE_PRODUCTION_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
+
+If `STAGING_BACKEND_ENV_FILE` or `PRODUCTION_BACKEND_ENV_FILE` is not set, `ArgoCD Bootstrap` falls back to the committed template under `deploy/runtime/`. For real staging or production deployments, prefer the secret-backed env file so runtime values do not live in Git.
+
+When `SANDBOX_BACKEND_ENV_FILE` is not set, sandbox plan/apply/bootstrap runs fall back to the staging runtime contract and then rewrite infrastructure endpoints from the sandbox Terraform outputs.
+
+After you finish the GitHub OIDC migration, delete the legacy `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets. The infrastructure workflows no longer use IAM user credentials.
+
+Terraform state does not have to live in the same region as the deployed infrastructure. When the backend bucket and lock table are in a different region, set `TF_STATE_REGION` so workflow `terraform init` can reach the correct S3 and DynamoDB backend while `AWS_REGION` still points at the target workload region.
+
+`Infrastructure Management` now reads `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `REDIS_PASSWORD` from that same environment contract so the managed RDS and Redis resources use the same credentials as the application.
+
+The backend runtime templates in `deploy/runtime/` are also the canonical copy-paste starting point for `STAGING_BACKEND_ENV_FILE` and `PRODUCTION_BACKEND_ENV_FILE`.
+
+Recommended repository variables for the two-cluster setup:
+
+- `STAGING_EKS_CLUSTER_NAME` (optional; defaults to `face-detector-staging`)
+- `PRODUCTION_EKS_CLUSTER_NAME` (optional; defaults to `face-detector-production`)
+- `SANDBOX_EKS_CLUSTER_PREFIX` (optional; defaults to `face-detector-sbx`, and sandbox cluster names are derived from the PR number)
+- `STAGING_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-staging`)
+- `PRODUCTION_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-production`)
+- `SANDBOX_SNAPSHOT_BUCKET_PREFIX` (optional; defaults to `face-detector-sbx`)
+- `STAGING_NODE_INSTANCE_TYPE`, `STAGING_NODE_MIN_SIZE`, `STAGING_NODE_MAX_SIZE`, `STAGING_NODE_DESIRED_SIZE` (optional; default to a small reactive-scaling staging envelope with 1 desired node and up to 2 nodes)
+- `PRODUCTION_NODE_INSTANCE_TYPE`, `PRODUCTION_NODE_MIN_SIZE`, `PRODUCTION_NODE_MAX_SIZE`, `PRODUCTION_NODE_DESIRED_SIZE` (optional; default to a larger production node group envelope)
+- `SANDBOX_NODE_INSTANCE_TYPE`, `SANDBOX_NODE_MIN_SIZE`, `SANDBOX_NODE_MAX_SIZE`, `SANDBOX_NODE_DESIRED_SIZE` (optional; default to a staging-sized sandbox envelope)
+- `SSM_KMS_KEY_ID` (optional; customer-managed KMS key for SSM `SecureString` parameters)
+
+OIDC trust policy templates for the three GitHub roles live under `aws/`, and the full setup checklist is documented in `aws/github-oidc-setup.md`.
+
+The enterprise trust model in this repository is default-branch anchored. Today the repository default branch is still `master`, so the strict reusable workflow references and AWS `job_workflow_ref` strings use `@refs/heads/master`. If you later rename the default branch to `main`, update those pins and trust strings together.
+
+The active workflows are:
+
+- `CI Pipeline`: trunk-based validation on pull requests and pushes to `main` or `master`, plus GHCR image publish on push
+- `Terraform PR Plan`: a `pull_request_target` parent on `main` or `master` that calls a reusable child workflow, resolves an exact PR sandbox identity, assumes `Role-Sandbox` through GitHub OIDC, and comments EKS plus SSM plan output back onto the PR
+- `GitOps Staging Promotion`: after `CI Pipeline` succeeds on `main` or `master`, commits the exact immutable image SHA into `values-staging.yaml`
+- `GitOps Production Promotion`: when a GitHub Release is published, resolves the release commit SHA and commits it into `values-production.yaml`
+- `Sandbox Auto Apply`: the developer-facing `pull_request_target` parent that gates on draft state, deploy label, and quota before calling the reusable infrastructure and bootstrap workflows from the default branch
+- `Sandbox Auto Destroy`: the developer-facing `pull_request_target` parent that tears down `sandbox-active` PR sandboxes on close, convert-to-draft, or final deploy-label removal
+- `Sandbox Janitor`: TTL and nightly cleanup for `sandbox-active` PR sandboxes using the same reusable infrastructure destroy workflow
+- `Sandbox DevOps Verify`: the privileged manual-dispatch lane for `devops/*` branches; the parent workflow can evolve on `devops/*`, but it calls the child infrastructure and bootstrap workflows pinned to the default branch so the AWS trust decision stays anchored on the approved workflow definition
+- `ArgoCD Bootstrap`: reusable bootstrap workflow plus manual rescue entry point for shared environments and sandbox admin recovery
+- `Infrastructure Management`: reusable infrastructure workflow plus manual rescue entry point for sandbox, staging, and production
+
+The promotion workflows commit with `[skip ci]` so GitOps config updates do not trigger an infinite CI rebuild loop.
+
+There is intentionally no automatic per-PR application preview environment in this setup. The infrastructure sandbox is now an exact-state-per-PR environment with cost gates and janitor cleanup, but it remains tightly controlled because EKS and RDS are expensive.
+
+For the trust boundary, keep the sandbox AWS role limited to `main`, `master`, and `devops/*` trusted refs. Protect `devops/*` with GitHub branch rules, and require DevOps approval for `.github/workflows/*` and `aws/github-oidc-*` through `CODEOWNERS` once you have more than one maintainer. If you want AWS to validate the exact reusable workflow path, not just the trusted ref, you must customize GitHub's OIDC `sub` claim to include `job_workflow_ref` and then match that customized `sub` in AWS. If you later move AWS role ARNs into a GitHub Environment such as `Sandbox-Internal`, update the AWS trust policy to match the environment-based OIDC subject because GitHub changes the default `sub` claim for jobs that reference an environment.
+
+If you are working solo, keep the same separation anyway: use `feature/*` or `dev/*` for app work, and reserve `devops/*` for Terraform, workflow, and OIDC experiments. That keeps your everyday application flow simple while preserving a clean high-risk lane for infrastructure changes.
+
+The dual-track sandbox layout is intentionally split by identity context: developer PR sandboxes use `sandboxes/pr-<number>/...`, while manual DevOps previews use `admin-previews/<owner>/<branch>/...`. The admin deployment identity itself is `admin-<actor>-<branch_hash>`, while the state path keeps the readable owner and branch namespace. That keeps Terraform state and cleanup responsibilities separated between the automatic PR lane and the manual admin lane.
+
+## Runtime Mapping on EKS
+
+- `backend`, `worker`, `frontend-admin`, and `nginx` are deployed by the Helm chart under `deploy/helm/face-detector`
+- PostgreSQL, Redis or Valkey, and S3 stay external to the cluster
+- sandbox and staging both track `deploy/helm/face-detector/values-staging.yaml` through `deploy/argocd/staging-application.yaml.tpl`, but sandbox clusters get isolated SSM paths under `/facedetector/sandbox/<cluster-name>/...`
+- staging tracks `deploy/helm/face-detector/values-staging.yaml` through `deploy/argocd/staging-application.yaml.tpl`
+- production tracks `deploy/helm/face-detector/values-production.yaml` through `deploy/argocd/production-application.yaml.tpl`
+- `nginx` remains the single public entry point and proxies `/api/` and `/admin/`
+- the Kubernetes secret `face-detector-env` is generated from SSM during `ArgoCD Bootstrap`, with SSM values sourced from the secret-backed backend env file and then patched with Terraform-managed endpoints when provided
+- SSM runtime values are stored as `SecureString` by default and decrypted during bootstrap when generating `.env.runtime`
+- when `GHCR_USERNAME` and `GHCR_TOKEN` are provided, `ArgoCD Bootstrap` also creates `ghcr-pull-secret` so the cluster can pull private GHCR images
+- `metrics-server` is installed by Terraform so the backend HPA can scale on pod resource usage
+- `KEDA` is installed by Terraform in both staging and production so the worker can scale on Redis queue depth while still using a native Kubernetes HPA under the hood
+- `cluster-autoscaler` is installed by Terraform in both staging and production so node capacity can follow backend HPA and worker KEDA demand
+
+## Object Storage Strategy
+
+- local Docker Compose uses MinIO as the development object store
+- staging and production use Amazon S3 as the primary snapshot and audit object store
+- the backend returns presigned S3 URLs in cloud environments, so Kubernetes does not have to proxy object traffic through an in-cluster MinIO service while object access stays time-limited
+
 ### Minimal IAM access pattern
 
-For GitHub Actions / EC2 bootstrapping you should use an IAM principal that can:
+Split the AWS identity story into two parts:
 
-- read SSM parameters under `/facedetector/*`
-- list and get objects from the S3 bucket
-- optionally use `rds-db:connect` if you enable IAM DB authentication
+- GitHub Actions should assume `Role-Sandbox`, `Role-Staging`, and `Role-Prod` through GitHub OIDC. The trust policy templates live in `aws/github-oidc-trust-policy-*.json`.
+- Runtime workloads inside AWS still need their own IAM permissions for SSM, S3, and any future service integration.
 
-A sample policy file is available at `aws/iam-policy-face-detector.json`.
+For GitHub Actions and EKS worker nodes you should still ensure the relevant principals can:
 
-## Using AWS SSM to generate .env files
+- read and write SSM parameters under `/facedetector/*`
+- create and manage EKS, VPC, and S3 resources for the lab environment when the role is meant to run Terraform
+- list and get objects from the S3 snapshot bucket
 
-The deploy workflows now generate `.env.production` or `.env.staging` on the GitHub Actions runner by reading values from AWS SSM Parameter Store.
-
-Required GitHub secrets for this flow:
-
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `AWS_REGION` (optional; defaults to `ap-southeast-1`)
-- `REGISTRY_ORG`
-- `REGISTRY_HOST` (optional; defaults to `ghcr.io`)
-- `VPS_HOST`
-- `VPS_USER`
-- `VPS_SSH_KEY`
-- `VPS_GHCR_USERNAME`
-- `VPS_GHCR_TOKEN`
-
-The workflow will:
-
-1. configure AWS credentials on the runner
-2. call AWS SSM to fetch production/staging app secrets
-3. write `.env.production` / `.env.staging`
-4. SCP the generated env file to the EC2 instance
-
-If you use private GHCR packages, the VPS also needs a read token:
-
-- `VPS_GHCR_USERNAME`: GitHub username or org
-- `VPS_GHCR_TOKEN`: PAT with `read:packages` or package read access
-
-You can rollback a failed release with:
-
-```bash
-VPS_HOST=your-vps-ip VPS_USER=ubuntu SSH_KEY_PATH=~/.ssh/your-aws-key.pem \
-GHCR_USERNAME=github GHCR_TOKEN=your-token \
-REGISTRY_HOST=ghcr.io REGISTRY_ORG=your-org \
-ROLLBACK_TAG=previous-tag \
-TARGET_DIR=/home/ubuntu/face-detector \
-bash scripts/vps-rollback-ghcr.sh
-```
-
-Alternatively, you can trigger a rollback from GitHub directly using the `Rollback Deployment` workflow and choose:
-
-- `environment`: `production` or `staging`
-- `rollback_tag`: optional tag to rollback to
-
-If you omit `ROLLBACK_TAG`, the rollback script will use the previous deployment tag recorded by `vps-deploy-ghcr.sh`.
-
-The production workflow will log in on the VPS, pull the images, deploy the stack, and run a health check.
-
-> The deploy script preserves an existing `/opt/face-detector/.env` file if one already exists, so secrets and custom production settings are not overwritten.
+A sample runtime access policy file is available at `aws/iam-policy-face-detector.json`. The GitHub OIDC role setup is documented in `aws/github-oidc-setup.md`.
 
 ## Security and Resilience Testing
 
@@ -286,7 +347,7 @@ Recommended backup components:
 - a periodic verification process that restores a backup to a staging instance
 - infrastructure and config as code so environment state can be reprovisioned
 
-For availability, use RDS Multi-AZ or read-replica endpoints in addition to backups, and configure `DATABASE_REPLICA_URLS` so read-heavy vector searches can fail over transparently.
+For availability, start with RDS Multi-AZ plus backups. Only populate `DATABASE_REPLICA_URLS` after you have a real reader endpoint and a read path that can tolerate replica lag.
 
 For `pgvector`, ensure the vector extension is installed in the restore target before importing a logical dump.
 
@@ -307,43 +368,36 @@ not another public web app. It should eventually show:
 
 Default recommendation for this repo:
 
-- keep `frontend-admin` on the VPS under `/admin/`
-- use one nginx domain
+- keep `frontend-admin` behind the same `nginx` entry point under `/admin/`
+- use one public domain and one ingress path layout
 - avoid CORS
-- keep debugging and deployment simpler
+- keep staging and production behavior simpler
 
-If you later want a more modern split deployment, only move the admin frontend
-to Vercel or Netlify. The backend and data services should still stay on the
-VPS.
+If you later move the admin frontend to a separate platform, do it only after auth, monitoring, and CORS behavior are already stable.
 
 ### Do you need cache?
 
 Yes, but keep it small:
 
-- Redis as the message queue broker
-- optional short-lived cache for system config
-- optional cooldown cache to prevent repeated recognition spam
+- use external Redis or Valkey as the Celery broker and result backend
+- keep queue and cache concerns on the same managed service only while the workload is still small
+- optional short-lived cache for system config and recognition cooldowns can live there too
+- scale workers from queue depth through KEDA instead of manually tuning deployment replicas
 
 Do not spend project time on multi-layer cache before the core recognition flow
 works correctly.
 
 ### Do you need backup?
 
-<<<<<<< HEAD
 Yes. Minimum practical backup plan for this repo is:
 
-- if using local Qdrant for development, schedule Qdrant snapshots or back up the `qdrant_data` volume
-- AWS S3 for raw employee images and snapshots, so image backups live outside the VPS
-- store backup artifacts outside the VPS whenever possible, such as pushing dumps to S3 or another storage host
+- automated RDS snapshots and point-in-time recovery
+- S3 versioning for raw snapshots and audit objects
+- periodic restore drills into a staging database
+- backup artifacts stored outside the running cluster
+- infrastructure and runtime config stored as code so the environment can be rebuilt cleanly
 
-In the current cloud-aligned design, the production vector store is `pgvector` inside Postgres, so the embedding backup is the same as the database backup.
-
-If you keep the legacy local `vector-db` service for dev, treat it as a separate cache/secondary index and back it up with snapshots or volume copies rather than relying on it as the primary source of truth.
-=======
-Yes. Minimum practical backup plan:
-
-No, not for this scenario. It adds complexity without solving your main project
-risks.
+In the current cloud-aligned design, the vector store is `pgvector` inside Postgres, so embedding durability follows the database backup strategy.
 
 ## Bonus-Point Priorities
 
@@ -355,15 +409,16 @@ If your goal is to maximize score with practical effort, prioritize:
 4. `Model/config versioning` with model name, version, and threshold in config
 5. `SSL/domain` via nginx and Let's Encrypt or Cloudflare
 
-<<<<<<< HEAD
 ## CI/CD Best Practices Included
 
-This repo now follows a more realistic CI/CD flow:
+This repo now follows a clearer single-registry CI/CD flow:
 
-- `pull_request` CI to catch issues early (lint, tests, build, dependency audit)
-- `main` CI to run deeper validation, build images, and smoke test the integrated stack
-- `deploy` workflow to update the VPS and validate the deployed service with a health check
-- optional Docker registry push when `REGISTRY_*` secrets are configured
+- `pull_request` CI to catch issues early with linting, unit tests, security scans, image builds, and Helm validation
+- `main` or `master` CI to publish immutable GHCR images tagged with the commit SHA
+- `GitOps Staging Promotion` to move staging to the exact GHCR image tag that passed CI, without rebuilding it
+- `GitOps Production Promotion` to move production only when a GitHub Release is cut
+- `ArgoCD Bootstrap` to reconnect Git, SSM, and cluster runtime state whenever an environment is brought back online
+- `Infrastructure Management` to turn the EKS environment on only when you need it and destroy it when you are done
 
 ## Performance and Accuracy Test Scripts
 
@@ -375,7 +430,7 @@ Example command:
 
 ```bash
 pip install -r backend/requirements.txt
-LOCUST_IMAGE_DIR=./scripts/load_test_images locust -f scripts/load_test_locust.py --host=http://your-vps-domain -u 100 -r 20 --run-time 5m --headless
+LOCUST_IMAGE_DIR=./scripts/load_test_images locust -f scripts/load_test_locust.py --host=http://your-server-domain -u 100 -r 20 --run-time 5m --headless
 ```
 
 This script sends concurrent `POST /api/vision/recognize` requests using sample JPG/PNG images.
@@ -408,35 +463,40 @@ The script prints precision, recall, F1-score, and a classification report.
 - Capture the Locust dashboard or headless statistics
 - Capture the evaluation metrics output from `evaluate_model.py`
 
-### Optional registry secrets
+### Optional GHCR pull secrets
 
-To push built images from `main` CI, configure these repository secrets:
+`CI Pipeline` pushes to GHCR with the built-in `GITHUB_TOKEN`, so no extra registry secret is required for publishing.
 
-- `REGISTRY_HOST` (optional; defaults to `ghcr.io`)
-- `REGISTRY_ORG` or namespace
-- `REGISTRY_USERNAME` (optional; defaults to `${{ github.actor }}` for GitHub Container Registry)
-- `REGISTRY_PASSWORD` (optional; defaults to `${{ secrets.GITHUB_TOKEN }}` for GitHub Container Registry)
+If your GHCR packages are private, configure these repository secrets so Kubernetes can pull the images during `ArgoCD Bootstrap`:
 
-If you use GitHub Container Registry, you usually only need:
+- `GHCR_USERNAME`
+- `GHCR_TOKEN`
 
-- `REGISTRY_ORG=your-github-username-or-org`
+If your GHCR packages are public, you can leave both unset.
 
-The workflow can then authenticate with the built-in `GITHUB_TOKEN`.
-
-=======
->>>>>>> master
 ## Important Environment Variables
 
-See `.env.example`:
+Backend local development and Docker Compose use `.env.example`.
+
+Backend runtime templates for SSM/EKS live in `deploy/runtime/backend.staging.env.example` and `deploy/runtime/backend.production.env.example`.
+
+Edge-device config lives in `edge-client/.env.example` plus optional environment-specific copies.
+
+Common backend runtime keys:
 
 - `DATABASE_URL`
+- `DATABASE_REPLICA_URLS`
 - `REDIS_URL`
-- `QDRANT_URL`
 - `MINIO_*`
+- `AWS_S3_BUCKET`
+- `AWS_S3_REGION`
 - `MODEL_NAME`
 - `MODEL_VERSION`
 - `MATCH_THRESHOLD`
-- `BACKEND_BASE_URL`
+
+Edge-device keys:
+
+- `API_BASE_URL`
 - `EDGE_DEVICE_NAME`
 - `SCAN_INTERVAL_SECONDS`
 
@@ -448,8 +508,8 @@ architecture, but the core business features still need implementation:
 - employee CRUD
 - role and authentication management
 - actual DeepFace embedding and matching
-- snapshot upload to MinIO
-- vector indexing in Qdrant
+- production-grade snapshot upload and retention on S3
+- richer `pgvector` indexing and search behavior
 - background re-indexing jobs
 - kiosk UI richer than console output
 - tests and database migrations
