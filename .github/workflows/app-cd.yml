@@ -116,7 +116,6 @@ jobs:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           GITHUB_TOKEN: ${{ github.token }}
           AWS_ROLE_SANDBOX_ARN: ${{ inputs.sandbox_role_override_arn || secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
-          AWS_ROLE_SANDBOX_ARN: ${{ inputs.sandbox_role_override_arn || secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
           AWS_ROLE_STAGING_ARN: ${{ secrets.AWS_ROLE_STAGING_ARN || vars['AWS_ROLE_STAGING_ARN'] || '' }}
           AWS_ROLE_PRODUCTION_ARN: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
           STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}

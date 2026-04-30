@@ -208,4 +208,3 @@ jobs:
       owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
       sandbox_role_override_arn: ${{ needs.evaluate-policy.outputs.sandbox_role_override_arn }}
     secrets: inherit
-    secrets: inherit
