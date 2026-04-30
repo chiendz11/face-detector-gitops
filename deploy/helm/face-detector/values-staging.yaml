@@ -1,17 +1,16 @@
 backend:
   replicaCount: 1
   image:
-    tag: 129eccbfc31ff3b6e86833acb17a93f9d8fcc591
+    tag: 257f59797f69e38f7e18026a8d50b81865b6d59c
   autoscaling:
     enabled: true
     minReplicas: 1
     maxReplicas: 3
     targetCPUUtilizationPercentage: 40
-
 worker:
   replicaCount: 1
   image:
-    tag: 129eccbfc31ff3b6e86833acb17a93f9d8fcc591
+    tag: 257f59797f69e38f7e18026a8d50b81865b6d59c
   autoscaling:
     keda:
       enabled: true
@@ -23,10 +22,8 @@ worker:
         targetLength: 2
         activationLength: 1
         enableTLS: true
-
 frontendAdmin:
   image:
-    tag: 129eccbfc31ff3b6e86833acb17a93f9d8fcc591
-
+    tag: 257f59797f69e38f7e18026a8d50b81865b6d59c
 nginx:
   replicaCount: 1
