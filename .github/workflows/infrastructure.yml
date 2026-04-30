@@ -562,6 +562,16 @@ jobs:
           kubectl delete triggerauthentication --all -n "$APP_NAMESPACE" --ignore-not-found --wait=false || true
           kubectl delete namespace "$APP_NAMESPACE" --ignore-not-found --wait=false || true
 
+      - name: Remove pre-deleted sandbox app namespace from terraform state
+        if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        working-directory: terraform/eks
+        run: |
+          if terraform state list | grep -Fxq 'kubernetes_namespace.application'; then
+            terraform state rm kubernetes_namespace.application
+          else
+            echo "kubernetes_namespace.application is already absent from terraform state."
+          fi
+
       - name: Terraform destroy
         if: inputs.action == 'destroy'
         working-directory: terraform/eks
