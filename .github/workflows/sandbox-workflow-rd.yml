@@ -134,7 +134,6 @@ jobs:
               );
               return;
             }
-
             core.setOutput('action', process.env.REQUESTED_ACTION);
             core.setOutput('source_ref_name', refName);
             core.setOutput('source_git_sha', context.sha);
@@ -208,4 +207,5 @@ jobs:
       source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
       owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
       sandbox_role_override_arn: ${{ needs.evaluate-policy.outputs.sandbox_role_override_arn }}
+    secrets: inherit
     secrets: inherit

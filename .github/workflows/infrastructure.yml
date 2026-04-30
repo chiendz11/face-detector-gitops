@@ -136,7 +136,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.environment == 'sandbox' && (inputs.action == 'apply' || inputs.sandbox_role_override_arn != '') && (inputs.source_ref_name || github.ref_name) || github.event.repository.default_branch }}
+          ref: ${{ inputs.environment == 'sandbox' && inputs.source_ref_name != '' && (inputs.pull_request_number == '' || inputs.action == 'apply' || inputs.sandbox_role_override_arn != '') && inputs.source_ref_name || github.event.repository.default_branch }}
 
       - name: Reject unsupported manual sandbox workflow refs
         if: github.event_name == 'workflow_dispatch' && inputs.environment == 'sandbox' && github.ref_name != github.event.repository.default_branch && !startsWith(github.ref_name, 'devops/')
@@ -165,6 +165,7 @@ jobs:
           GIT_SHA: ${{ inputs.source_git_sha || github.sha }}
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           GITHUB_TOKEN: ${{ github.token }}
+          AWS_ROLE_SANDBOX_ARN: ${{ inputs.sandbox_role_override_arn || secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
           AWS_ROLE_SANDBOX_ARN: ${{ inputs.sandbox_role_override_arn || secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
           AWS_ROLE_STAGING_ARN: ${{ secrets.AWS_ROLE_STAGING_ARN || vars['AWS_ROLE_STAGING_ARN'] || '' }}
           AWS_ROLE_PRODUCTION_ARN: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
@@ -520,7 +521,10 @@ jobs:
                 body,
               });
             }
+<<<<<<< HEAD
 
+=======
+>>>>>>> origin/master
       - name: Cleanup sandbox AWS orphans before destroy
         if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
         env:
@@ -533,8 +537,109 @@ jobs:
             --cluster-name "$CLUSTER_NAME" \
             --environment-identity "$ENVIRONMENT_IDENTITY"
 
+<<<<<<< HEAD
       - name: Terraform destroy
         if: inputs.action == 'destroy'
+=======
+      - name: Pre-clean sandbox application namespace before destroy
+        if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          APP_NAMESPACE: facedetector
+          ARGOCD_NAMESPACE: argocd
+          ARGOCD_APPLICATION_NAME: face-detector-staging
+        run: |
+          if ! aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" >/dev/null 2>&1; then
+            echo "Cluster $CLUSTER_NAME does not exist. Skipping sandbox application pre-cleanup."
+            exit 0
+          fi
+
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -sSL -o kubectl "https://dl.k8s.io/release/v1.30.1/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/kubectl
+          fi
+
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME" --alias "$CLUSTER_NAME"
+
+          if ! kubectl get namespace "$APP_NAMESPACE" >/dev/null 2>&1; then
+            echo "Namespace $APP_NAMESPACE is already absent. Skipping sandbox application pre-cleanup."
+            exit 0
+          fi
+
+          kubectl delete application "$ARGOCD_APPLICATION_NAME" -n "$ARGOCD_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete namespace "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+
+          if kubectl wait --for=delete "namespace/$APP_NAMESPACE" --timeout=30s >/dev/null 2>&1; then
+            echo "Namespace $APP_NAMESPACE deleted cleanly after the initial delete request."
+            exit 0
+          fi
+
+          echo "Namespace $APP_NAMESPACE is still terminating. Deleting all remaining namespaced resources dynamically."
+          kubectl api-resources --verbs=list,delete --namespaced -o name \
+            | tr -d '\r' \
+            | sort -u \
+            | while IFS= read -r resource_name; do
+                if [ -z "$resource_name" ]; then
+                  continue
+                fi
+
+                kubectl delete "$resource_name" --all -n "$APP_NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+              done
+
+          if kubectl wait --for=delete "namespace/$APP_NAMESPACE" --timeout=30s >/dev/null 2>&1; then
+            echo "Namespace $APP_NAMESPACE deleted after dynamic cleanup."
+            exit 0
+          fi
+
+          echo "Namespace $APP_NAMESPACE is still terminating. Removing finalizers from remaining namespaced resources."
+          kubectl api-resources --verbs=list --namespaced -o name \
+            | tr -d '\r' \
+            | sort -u \
+            | while IFS= read -r resource_name; do
+                if [ -z "$resource_name" ]; then
+                  continue
+                fi
+
+                kubectl get "$resource_name" -n "$APP_NAMESPACE" -o name 2>/dev/null \
+                  | while IFS= read -r object_name; do
+                      if [ -z "$object_name" ]; then
+                        continue
+                      fi
+
+                      kubectl patch "$object_name" -n "$APP_NAMESPACE" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+                    done
+              done
+
+          kubectl delete namespace "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+          if kubectl wait --for=delete "namespace/$APP_NAMESPACE" --timeout=30s >/dev/null 2>&1; then
+            echo "Namespace $APP_NAMESPACE deleted after clearing resource finalizers."
+            exit 0
+          fi
+
+          echo "Namespace $APP_NAMESPACE is still terminating. Clearing namespace finalizers as a last resort."
+          kubectl get namespace "$APP_NAMESPACE" -o json \
+            | python3 -c "import json, sys; payload = json.load(sys.stdin); payload.setdefault('spec', {}).pop('finalizers', None); print(json.dumps(payload))" \
+            | kubectl replace --raw "/api/v1/namespaces/$APP_NAMESPACE/finalize" -f - || true
+
+          kubectl delete namespace "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+
+      - name: Remove pre-deleted sandbox app namespace from terraform state
+        if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        working-directory: terraform/eks
+        run: |
+          if terraform state list | grep -Fxq 'kubernetes_namespace.application'; then
+            terraform state rm kubernetes_namespace.application
+          else
+            echo "kubernetes_namespace.application is already absent from terraform state."
+          fi
+
+      - name: Terraform destroy
+        id: terraform_destroy_initial
+        if: inputs.action == 'destroy'
+        continue-on-error: true
+>>>>>>> origin/master
         working-directory: terraform/eks
         env:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
@@ -554,6 +659,51 @@ jobs:
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
         run: terraform destroy -auto-approve -input=false
 
+<<<<<<< HEAD
+=======
+      - name: Cleanup sandbox AWS orphans after destroy
+        if: always() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          ENVIRONMENT_IDENTITY: ${{ steps.context.outputs.environment_identity }}
+        run: |
+          python3 scripts/cleanup_sandbox_aws_orphans.py \
+            --region "$AWS_REGION" \
+            --cluster-name "$CLUSTER_NAME" \
+            --environment-identity "$ENVIRONMENT_IDENTITY"
+
+      - name: Retry Terraform destroy after orphan cleanup
+        id: terraform_destroy_retry
+        if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.terraform_destroy_initial.outcome == 'failure'
+        working-directory: terraform/eks
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
+          TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
+          TF_VAR_node_instance_type: ${{ steps.context.outputs.node_instance_type }}
+          TF_VAR_node_min_size: ${{ steps.context.outputs.node_min_size }}
+          TF_VAR_node_max_size: ${{ steps.context.outputs.node_max_size }}
+          TF_VAR_node_desired_size: ${{ steps.context.outputs.node_desired_size }}
+          TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
+          TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
+          TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
+          TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
+        run: terraform destroy -auto-approve -input=false
+
+      - name: Fail if Terraform destroy did not complete
+        if: |
+          inputs.action == 'destroy' && (
+            (steps.context.outputs.deployment_environment != 'sandbox' && steps.terraform_destroy_initial.outcome == 'failure') ||
+            (steps.context.outputs.deployment_environment == 'sandbox' && steps.terraform_destroy_initial.outcome == 'failure' && steps.terraform_destroy_retry.outcome != 'success')
+          )
+        run: exit 1
+
+>>>>>>> origin/master
       - name: Terraform destroy sandbox SSM parameters
         if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
         working-directory: terraform/ssm
@@ -573,6 +723,7 @@ jobs:
             -backend-config="region=${TF_STATE_REGION}"
           terraform destroy -auto-approve -input=false
 
+<<<<<<< HEAD
       - name: Cleanup sandbox AWS orphans after destroy
         if: always() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
         env:
@@ -584,6 +735,214 @@ jobs:
             --region "$AWS_REGION" \
             --cluster-name "$CLUSTER_NAME" \
             --environment-identity "$ENVIRONMENT_IDENTITY"
+=======
+      - name: Verify sandbox destroy convergence
+        if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_STATE_LOCK_TABLE: ${{ secrets.TF_STATE_LOCK_TABLE }}
+          TERRAFORM_STATE_KEY: ${{ steps.context.outputs.terraform_state_key }}
+          SSM_STATE_KEY: ${{ steps.context.outputs.ssm_state_key }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          ENVIRONMENT_IDENTITY: ${{ steps.context.outputs.environment_identity }}
+          SNAPSHOT_BUCKET_NAME: ${{ steps.context.outputs.snapshot_bucket_name }}
+          SSM_ENVIRONMENT_KEY: ${{ steps.context.outputs.ssm_environment_key }}
+        run: |
+          set -euo pipefail
+
+          pushd terraform/eks >/dev/null
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="dynamodb_table=${TF_STATE_LOCK_TABLE}" \
+            -backend-config="key=${TERRAFORM_STATE_KEY}" \
+            -backend-config="region=${TF_STATE_REGION}" >/dev/null
+          PRIMARY_STATE=$(terraform state list)
+          popd >/dev/null
+
+          if [ -n "$PRIMARY_STATE" ]; then
+            echo "Primary sandbox terraform state is not empty after destroy:" >&2
+            echo "$PRIMARY_STATE" >&2
+            exit 1
+          fi
+
+          pushd terraform/ssm >/dev/null
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="dynamodb_table=${TF_STATE_LOCK_TABLE}" \
+            -backend-config="key=${SSM_STATE_KEY}" \
+            -backend-config="region=${TF_STATE_REGION}" >/dev/null
+          SECONDARY_STATE=$(terraform state list)
+          popd >/dev/null
+
+          if [ -n "$SECONDARY_STATE" ]; then
+            echo "Sandbox SSM terraform state is not empty after destroy:" >&2
+            echo "$SECONDARY_STATE" >&2
+            exit 1
+          fi
+
+          if aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" >/dev/null 2>&1; then
+            echo "EKS cluster $CLUSTER_NAME still exists after sandbox destroy." >&2
+            aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" >&2 || true
+            exit 1
+          fi
+
+          if aws s3api head-bucket --bucket "$SNAPSHOT_BUCKET_NAME" 2>"$RUNNER_TEMP/sandbox-head-bucket.err"; then
+            echo "Snapshot bucket $SNAPSHOT_BUCKET_NAME still exists after sandbox destroy." >&2
+            exit 1
+          elif ! grep -Eiq '404|Not Found|NoSuchBucket' "$RUNNER_TEMP/sandbox-head-bucket.err"; then
+            cat "$RUNNER_TEMP/sandbox-head-bucket.err" >&2
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+
+          def run_aws(*aws_args: str, expect_json: bool = True, allow_not_found: bool = False):
+              command = ["aws", *aws_args, "--region", os.environ["AWS_REGION"]]
+              if expect_json:
+                  command.extend(["--output", "json"])
+
+              completed = subprocess.run(command, capture_output=True, text=True)
+              if completed.returncode != 0:
+                  stderr = completed.stderr.strip()
+                  if allow_not_found and any(
+                      marker in stderr
+                      for marker in (
+                          "ResourceNotFoundException",
+                          "NoSuchBucket",
+                          "ParameterNotFound",
+                          "ValidationError",
+                          "Not Found",
+                          "404",
+                      )
+                  ):
+                      return None
+                  raise SystemExit(
+                      "AWS CLI command failed during sandbox destroy verification:\n"
+                      f"  command: {' '.join(command)}\n"
+                      f"  stderr: {stderr or completed.stdout.strip()}"
+                  )
+
+              if not expect_json:
+                  return completed.stdout.strip()
+
+              payload = completed.stdout.strip()
+              return json.loads(payload) if payload else {}
+
+
+          def tag_map(tags):
+              return {item.get("Key", ""): item.get("Value", "") for item in (tags or [])}
+
+
+          def has_cluster_marker(tags):
+              cluster_name = os.environ["CLUSTER_NAME"]
+              environment_identity = os.environ["ENVIRONMENT_IDENTITY"]
+              tags_by_key = tag_map(tags)
+              return any(
+                  (
+                      key == "eks:cluster-name" and value == cluster_name
+                  )
+                  or (
+                      key == "facedetector:cluster-name" and value == cluster_name
+                  )
+                  or (
+                      key == "facedetector:identity" and value == environment_identity
+                  )
+                  or (
+                      key == f"k8s.io/cluster-autoscaler/{cluster_name}" and value == "owned"
+                  )
+                  or (
+                      key == f"kubernetes.io/cluster/{cluster_name}" and value in {"owned", "shared"}
+                  )
+                  for key, value in tags_by_key.items()
+              )
+
+
+          residuals = []
+
+          for vpc in run_aws("ec2", "describe-vpcs").get("Vpcs", []):
+              if has_cluster_marker(vpc.get("Tags")):
+                  residuals.append(f"vpc:{vpc['VpcId']}")
+
+          for group in run_aws("ec2", "describe-security-groups").get("SecurityGroups", []):
+              if group.get("GroupName") == "default":
+                  continue
+              if has_cluster_marker(group.get("Tags")):
+                  residuals.append(f"security-group:{group['GroupId']}")
+
+          for interface in run_aws("ec2", "describe-network-interfaces").get("NetworkInterfaces", []):
+              if has_cluster_marker(interface.get("TagSet") or interface.get("Tags")):
+                  residuals.append(f"network-interface:{interface['NetworkInterfaceId']}")
+
+          for volume in run_aws("ec2", "describe-volumes", "--filters", "Name=status,Values=available").get("Volumes", []):
+              if has_cluster_marker(volume.get("Tags")):
+                  residuals.append(f"ebs-volume:{volume['VolumeId']}")
+
+          for endpoint in run_aws("ec2", "describe-vpc-endpoints").get("VpcEndpoints", []):
+              if endpoint.get("State") in {"deleted", "deleting"}:
+                  continue
+              if has_cluster_marker(endpoint.get("Tags")):
+                  residuals.append(f"vpc-endpoint:{endpoint['VpcEndpointId']}")
+
+          for connection in run_aws("ec2", "describe-vpc-peering-connections").get("VpcPeeringConnections", []):
+              if connection.get("Status", {}).get("Code") in {"deleted", "rejected", "failed"}:
+                  continue
+              if has_cluster_marker(connection.get("Tags")):
+                  residuals.append(f"vpc-peering:{connection['VpcPeeringConnectionId']}")
+
+          for load_balancer in run_aws("elbv2", "describe-load-balancers").get("LoadBalancers", []):
+              tags_response = run_aws(
+                  "elbv2",
+                  "describe-tags",
+                  "--resource-arns",
+                  load_balancer["LoadBalancerArn"],
+                  allow_not_found=True,
+              )
+              tag_descriptions = tags_response.get("TagDescriptions", []) if tags_response else []
+              tags = tag_descriptions[0].get("Tags", []) if tag_descriptions else []
+              if has_cluster_marker(tags):
+                  residuals.append(f"elbv2:{load_balancer['LoadBalancerArn']}")
+
+          for load_balancer in run_aws("elb", "describe-load-balancers").get("LoadBalancerDescriptions", []):
+              tags_response = run_aws(
+                  "elb",
+                  "describe-tags",
+                  "--load-balancer-names",
+                  load_balancer["LoadBalancerName"],
+                  allow_not_found=True,
+              )
+              descriptions = tags_response.get("TagDescriptions", []) if tags_response else []
+              tags = descriptions[0].get("Tags", []) if descriptions else []
+              if has_cluster_marker(tags):
+                  residuals.append(f"classic-elb:{load_balancer['LoadBalancerName']}")
+
+          ssm_environment_key = os.environ["SSM_ENVIRONMENT_KEY"].strip()
+          if ssm_environment_key:
+              parameters = run_aws(
+                  "ssm",
+                  "get-parameters-by-path",
+                  "--path",
+                  f"/facedetector/{ssm_environment_key}",
+                  "--recursive",
+              )
+              parameter_names = [item["Name"] for item in parameters.get("Parameters", [])]
+              if parameter_names:
+                  residuals.extend(f"ssm-parameter:{name}" for name in parameter_names)
+
+          if residuals:
+              print("Sandbox destroy verification found residual resources:", file=sys.stderr)
+              for item in residuals:
+                  print(f"  - {item}", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+
+>>>>>>> origin/master
 
       - name: Mark sandbox as inactive
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
@@ -604,7 +963,10 @@ jobs:
                 throw error;
               }
             }
+<<<<<<< HEAD
 
+=======
+>>>>>>> origin/master
       - name: Build sandbox destroy PR comment
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
         env:

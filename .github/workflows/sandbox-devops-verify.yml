@@ -87,7 +87,6 @@ jobs:
                 'DEVOPS_ADMIN_ALLOW_SOLO_MODE is enabled, but DEVOPS_ADMIN_ALLOWED_ACTORS_JSON contains more than one actor. Peer approval remains required.'
               );
             }
-
             if (!allowedActors.includes(context.actor)) {
               core.setFailed(
                 `Actor @${context.actor} is not approved for the DevOps admin lane. Allowed actors: ${allowedActors.join(', ')}`
@@ -143,7 +142,6 @@ jobs:
               return;
               }
             }
-
             core.setOutput('action', process.env.REQUESTED_ACTION);
             core.setOutput('source_ref_name', refName);
             core.setOutput('source_git_sha', context.sha);
@@ -169,6 +167,7 @@ jobs:
       issues: write
       pull-requests: write
     uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
+    uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     with:
       environment: sandbox
       action: apply
@@ -187,6 +186,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: read
+    uses: chiendz11/Face_dectector/.github/workflows/app-cd.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     uses: chiendz11/Face_dectector/.github/workflows/app-cd.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     with:
       environment: sandbox
@@ -207,10 +207,12 @@ jobs:
       issues: write
       pull-requests: write
     uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
+    uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     with:
       environment: sandbox
       action: destroy
       source_ref_name: ${{ needs.evaluate-policy.outputs.source_ref_name }}
       source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
       owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
+    secrets: inherit
     secrets: inherit
