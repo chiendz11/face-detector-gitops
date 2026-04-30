@@ -524,6 +524,44 @@ jobs:
             --cluster-name "$CLUSTER_NAME" \
             --environment-identity "$ENVIRONMENT_IDENTITY"
 
+      - name: Pre-clean sandbox application namespace before destroy
+        if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          APP_NAMESPACE: facedetector
+          ARGOCD_NAMESPACE: argocd
+          ARGOCD_APPLICATION_NAME: face-detector-staging
+        run: |
+          if ! aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" >/dev/null 2>&1; then
+            echo "Cluster $CLUSTER_NAME does not exist. Skipping sandbox application pre-cleanup."
+            exit 0
+          fi
+
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -sSL -o kubectl "https://dl.k8s.io/release/v1.30.1/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/kubectl
+          fi
+
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME" --alias "$CLUSTER_NAME"
+
+          if ! kubectl get namespace "$APP_NAMESPACE" >/dev/null 2>&1; then
+            echo "Namespace $APP_NAMESPACE is already absent. Skipping sandbox application pre-cleanup."
+            exit 0
+          fi
+
+          kubectl delete application "$ARGOCD_APPLICATION_NAME" -n "$ARGOCD_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete all --all -n "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete ingress --all -n "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete pvc --all -n "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete configmap --all -n "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete secret face-detector-env -n "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete scaledobject --all -n "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete scaledjob --all -n "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete triggerauthentication --all -n "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl delete namespace "$APP_NAMESPACE" --ignore-not-found --wait=false || true
+
       - name: Terraform destroy
         if: inputs.action == 'destroy'
         working-directory: terraform/eks
@@ -575,6 +613,7 @@ jobs:
             --region "$AWS_REGION" \
             --cluster-name "$CLUSTER_NAME" \
             --environment-identity "$ENVIRONMENT_IDENTITY"
+
 
       - name: Mark sandbox as inactive
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
