@@ -168,7 +168,7 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
-    uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@master
+    uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     with:
       environment: sandbox
       action: apply
@@ -187,7 +187,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: read
-    uses: chiendz11/Face_dectector/.github/workflows/app-cd.yml@master
+    uses: chiendz11/Face_dectector/.github/workflows/app-cd.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     with:
       environment: sandbox
       git_revision: ${{ needs.evaluate-policy.outputs.source_ref_name }}
@@ -206,7 +206,7 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
-    uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@master
+    uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     with:
       environment: sandbox
       action: destroy
