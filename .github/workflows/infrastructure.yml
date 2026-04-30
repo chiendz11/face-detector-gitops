@@ -573,7 +573,9 @@ jobs:
           fi
 
       - name: Terraform destroy
+        id: terraform_destroy_initial
         if: inputs.action == 'destroy'
+        continue-on-error: true
         working-directory: terraform/eks
         env:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
@@ -593,6 +595,48 @@ jobs:
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
         run: terraform destroy -auto-approve -input=false
 
+      - name: Cleanup sandbox AWS orphans after destroy
+        if: always() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          ENVIRONMENT_IDENTITY: ${{ steps.context.outputs.environment_identity }}
+        run: |
+          python3 scripts/cleanup_sandbox_aws_orphans.py \
+            --region "$AWS_REGION" \
+            --cluster-name "$CLUSTER_NAME" \
+            --environment-identity "$ENVIRONMENT_IDENTITY"
+
+      - name: Retry Terraform destroy after orphan cleanup
+        id: terraform_destroy_retry
+        if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.terraform_destroy_initial.outcome == 'failure'
+        working-directory: terraform/eks
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
+          TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
+          TF_VAR_node_instance_type: ${{ steps.context.outputs.node_instance_type }}
+          TF_VAR_node_min_size: ${{ steps.context.outputs.node_min_size }}
+          TF_VAR_node_max_size: ${{ steps.context.outputs.node_max_size }}
+          TF_VAR_node_desired_size: ${{ steps.context.outputs.node_desired_size }}
+          TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
+          TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
+          TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
+          TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
+        run: terraform destroy -auto-approve -input=false
+
+      - name: Fail if Terraform destroy did not complete
+        if: |
+          inputs.action == 'destroy' && (
+            (steps.context.outputs.deployment_environment != 'sandbox' && steps.terraform_destroy_initial.outcome == 'failure') ||
+            (steps.context.outputs.deployment_environment == 'sandbox' && steps.terraform_destroy_initial.outcome == 'failure' && steps.terraform_destroy_retry.outcome != 'success')
+          )
+        run: exit 1
+
       - name: Terraform destroy sandbox SSM parameters
         if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
         working-directory: terraform/ssm
@@ -611,18 +655,6 @@ jobs:
             -backend-config="key=${{ steps.context.outputs.ssm_state_key }}" \
             -backend-config="region=${TF_STATE_REGION}"
           terraform destroy -auto-approve -input=false
-
-      - name: Cleanup sandbox AWS orphans after destroy
-        if: always() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
-        env:
-          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
-          ENVIRONMENT_IDENTITY: ${{ steps.context.outputs.environment_identity }}
-        run: |
-          python3 scripts/cleanup_sandbox_aws_orphans.py \
-            --region "$AWS_REGION" \
-            --cluster-name "$CLUSTER_NAME" \
-            --environment-identity "$ENVIRONMENT_IDENTITY"
 
 
       - name: Mark sandbox as inactive
