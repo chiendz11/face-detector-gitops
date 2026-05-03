@@ -1,0 +1,36 @@
+name: Build Docker Images
+description: >
+  Build all images listed in the image catalog using docker buildx --load.
+  Assumes the caller has already done actions/checkout and docker/setup-buildx-action.
+
+inputs:
+  image_host:
+    description: "Registry host + org prefix, e.g. ghcr.io/myorg"
+    required: true
+  image_tag:
+    description: "Docker image tag (commit SHA or semver)"
+    required: true
+  catalog_path:
+    description: "Repo-relative path to the image catalog JSON file"
+    default: ".github/image-catalog.json"
+
+runs:
+  using: composite
+  steps:
+    - name: Build images from catalog
+      shell: bash
+      env:
+        IMAGE_HOST: ${{ inputs.image_host }}
+        IMAGE_TAG: ${{ inputs.image_tag }}
+        CATALOG: ${{ inputs.catalog_path }}
+      run: |
+        while IFS= read -r row; do
+          name=$(echo "$row" | jq -r '.name')
+          repo=$(echo "$row" | jq -r '.repository')
+          dockerfile=$(echo "$row" | jq -r '.dockerfile')
+          ctx=$(echo "$row" | jq -r '.context')
+          ref="$IMAGE_HOST/$repo:$IMAGE_TAG"
+          echo "::group::Build $name → $ref"
+          docker buildx build --load -t "$ref" -f "$dockerfile" "$ctx"
+          echo "::endgroup::"
+        done < <(jq -c '.[]' "$CATALOG")

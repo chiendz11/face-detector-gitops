@@ -1,0 +1,21 @@
+name: Sign Images and Attest SBOMs
+description: >
+  Cosign-sign each pushed image and attach its SBOM as an attestation.
+  Reads sign targets from .artifacts/sign-targets.json
+  (array of {ref: string, sbom: string}).
+  Assumes cosign is already installed (sigstore/cosign-installer).
+
+runs:
+  using: composite
+  steps:
+    - name: Sign images and attach SBOM attestations
+      shell: bash
+      run: |
+        while IFS= read -r row; do
+          ref=$(echo "$row" | jq -r '.ref')
+          sbom=$(echo "$row" | jq -r '.sbom')
+          echo "::group::Sign $ref"
+          cosign sign --yes "$ref"
+          cosign attest --yes --type spdxjson --predicate "$sbom" "$ref"
+          echo "::endgroup::"
+        done < <(jq -c '.[]' .artifacts/sign-targets.json)
