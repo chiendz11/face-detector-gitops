@@ -1,0 +1,44 @@
+name: Generate SBOMs
+description: >
+  Generate SPDX-JSON SBOMs for all images listed in the image catalog using Syft.
+  Outputs to .artifacts/sbom/<name>.spdx.json.
+
+inputs:
+  image_host:
+    description: "Registry host + org prefix, e.g. ghcr.io/myorg"
+    required: true
+  image_tag:
+    description: "Docker image tag"
+    required: true
+  catalog_path:
+    description: "Repo-relative path to the image catalog JSON file"
+    default: ".github/image-catalog.json"
+  syft_version:
+    description: "Syft container image version tag"
+    default: "v1.8.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Generate SBOMs with Syft
+      shell: bash
+      env:
+        IMAGE_HOST: ${{ inputs.image_host }}
+        IMAGE_TAG: ${{ inputs.image_tag }}
+        CATALOG: ${{ inputs.catalog_path }}
+        SYFT_VERSION: ${{ inputs.syft_version }}
+      run: |
+        mkdir -p .artifacts/sbom
+        while IFS= read -r row; do
+          name=$(echo "$row" | jq -r '.name')
+          repo=$(echo "$row" | jq -r '.repository')
+          ref="$IMAGE_HOST/$repo:$IMAGE_TAG"
+          echo "::group::SBOM $name"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${PWD}/.artifacts/sbom:/sbom" \
+            "anchore/syft:${SYFT_VERSION}" \
+            "$ref" \
+            -o "spdx-json=/sbom/${name}.spdx.json"
+          echo "::endgroup::"
+        done < <(jq -c '.[]' "$CATALOG")

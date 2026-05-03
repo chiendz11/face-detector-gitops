@@ -167,7 +167,6 @@ jobs:
       issues: write
       pull-requests: write
     uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
-    uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     with:
       environment: sandbox
       action: apply
@@ -186,7 +185,6 @@ jobs:
       contents: read
       id-token: write
       pull-requests: read
-    uses: chiendz11/Face_dectector/.github/workflows/app-cd.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     uses: chiendz11/Face_dectector/.github/workflows/app-cd.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     with:
       environment: sandbox
@@ -207,12 +205,10 @@ jobs:
       issues: write
       pull-requests: write
     uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
-    uses: chiendz11/Face_dectector/.github/workflows/infrastructure.yml@08010a13444711411a225f6bc9628dc2955f7ecb
     with:
       environment: sandbox
       action: destroy
       source_ref_name: ${{ needs.evaluate-policy.outputs.source_ref_name }}
       source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
       owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
-    secrets: inherit
     secrets: inherit

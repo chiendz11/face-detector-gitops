@@ -1,0 +1,26 @@
+[
+    {
+        "name": "backend",
+        "repository": "face-detector-backend",
+        "dockerfile": "backend/Dockerfile",
+        "context": "backend"
+    },
+    {
+        "name": "frontend-admin",
+        "repository": "face-detector-admin",
+        "dockerfile": "frontend-admin/Dockerfile",
+        "context": "frontend-admin"
+    },
+    {
+        "name": "edge-client",
+        "repository": "face-detector-edge",
+        "dockerfile": "edge-client/Dockerfile",
+        "context": "edge-client"
+    },
+    {
+        "name": "nginx",
+        "repository": "face-detector-nginx",
+        "dockerfile": "nginx/Dockerfile",
+        "context": "nginx"
+    }
+]
