@@ -1,0 +1,38 @@
+{{- if .Values.migrationJob.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: face-detector-db-migrate
+  labels:
+    app.kubernetes.io/name: face-detector
+    app.kubernetes.io/component: migration
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  backoffLimit: {{ .Values.migrationJob.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.migrationJob.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: face-detector
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: OnFailure
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      containers:
+        - name: migrate
+          image: "{{ include "face-detector.imageRef" .Values.backend.image }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          command:
+{{ toYaml .Values.migrationJob.command | indent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.envSecretName }}
+          resources:
+{{ toYaml .Values.migrationJob.resources | indent 12 }}
+{{- end }}

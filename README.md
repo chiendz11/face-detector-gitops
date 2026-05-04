@@ -15,7 +15,9 @@ edge devices near the cameras.
 - `frontend-admin/`: admin panel for employee enrollment, threshold tuning,
   role management, and audit review. It is served at `/admin/`.
 - `nginx/`: reverse proxy that exposes `/admin/` and `/api/`.
-- `docker-compose.yml`: local or single-server stack.
+- `docker-compose.yml`: base stack contract shared by all environments.
+- `docker-compose.dev.yml`: local development override (builds images and brings db, redis, minio).
+- `docker-compose.ci.yml`: CI override (uses prebuilt images and CI-specific runtime flags).
 - `docker-compose.edge.yml`: edge-device stack.
 - `deploy/`: Helm chart plus ArgoCD applications for GitOps deployments.
 - `terraform/`: AWS bootstrap, EKS, and SSM state management.
@@ -89,6 +91,8 @@ project-root/
 |-- edge-client/
 |-- nginx/
 |-- docker-compose.yml
+|-- docker-compose.dev.yml
+|-- docker-compose.ci.yml
 |-- docker-compose.edge.yml
 |-- .env.example
 |-- deploy/runtime/
@@ -105,12 +109,19 @@ project-root/
 - `http://your-server-domain/api/health`: backend health
 - `edge-client`: entrance kiosk flow
 
+## API Contract And E2E Smoke Test
+
+- API request and response contracts now live in `docs/api-contract.yml` as the source-of-truth contract file.
+- Local or CI compose-backed smoke test lives in `scripts/ci-e2e-test.sh`.
+- HTTP smoke assertions run in `backend/tests/e2e/`, while the shell script is responsible for infra bring-up, Alembic migration, and service readiness checks.
+- Unit and service-level integration tests stay under `backend/tests/` and are executed by default with `pytest`.
+
 ## Run With Docker
 
 ### Server stack
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 This starts:
@@ -298,6 +309,15 @@ A sample runtime access policy file is available at `aws/iam-policy-face-detecto
 ## Security and Resilience Testing
 
 The current deployment now includes an Nginx API rate limit for `/api/` at `5r/s` with burst handling. This helps protect the backend from noisy or abusive clients and returns `429` when limits are exceeded.
+
+Rate limiting is parameterized via environment variables rendered into the Nginx config at container startup:
+
+- `NGINX_RATE_LIMIT_ENABLED` (`true` or `false`)
+- `NGINX_RATE_LIMIT_ZONE_RATE` (default `5r/s`)
+- `NGINX_RATE_LIMIT_BURST` (default `10`)
+- `NGINX_RATE_LIMIT_MODE` (default `nodelay`)
+
+`docker-compose.dev.yml` and `docker-compose.ci.yml` can set `NGINX_RATE_LIMIT_ENABLED=false` to avoid flaky smoke tests, while production keeps it enabled.
 
 Use the helper scripts in `scripts/` to verify common hardening behavior:
 

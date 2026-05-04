@@ -2,6 +2,7 @@ backend:
   replicaCount: 1
   image:
     tag: 257f59797f69e38f7e18026a8d50b81865b6d59c
+    digest: ""
   autoscaling:
     enabled: true
     minReplicas: 1
@@ -11,6 +12,7 @@ worker:
   replicaCount: 1
   image:
     tag: 257f59797f69e38f7e18026a8d50b81865b6d59c
+    digest: ""
   autoscaling:
     keda:
       enabled: true
@@ -25,5 +27,9 @@ worker:
 frontendAdmin:
   image:
     tag: 257f59797f69e38f7e18026a8d50b81865b6d59c
+    digest: ""
 nginx:
   replicaCount: 1
+  image:
+    tag: 257f59797f69e38f7e18026a8d50b81865b6d59c
+    digest: ""

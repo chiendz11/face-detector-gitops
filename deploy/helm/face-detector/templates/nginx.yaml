@@ -76,7 +76,7 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: "{{ .Values.nginx.image.repository }}:{{ .Values.nginx.image.tag }}"
+          image: "{{ include "face-detector.imageRef" .Values.nginx.image }}"
           imagePullPolicy: {{ .Values.nginx.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.nginx.service.port }}

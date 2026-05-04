@@ -2,6 +2,7 @@ backend:
   replicaCount: 2
   image:
     tag: latest
+    digest: ""
   autoscaling:
     enabled: true
     minReplicas: 2
@@ -12,6 +13,7 @@ worker:
   replicaCount: 1
   image:
     tag: latest
+    digest: ""
   autoscaling:
     keda:
       enabled: true
@@ -29,6 +31,10 @@ worker:
 frontendAdmin:
   image:
     tag: latest
+    digest: ""
 
 nginx:
   replicaCount: 2
+  image:
+    tag: latest
+    digest: ""

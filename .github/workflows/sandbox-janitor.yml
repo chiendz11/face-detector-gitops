@@ -30,7 +30,8 @@ jobs:
       candidate_count: ${{ steps.collect.outputs.candidate_count }}
     env:
       JANITOR_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode || (github.event.schedule == '0 15 * * *' && 'nightly' || 'ttl') }}
-      TTL_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ttl_hours || vars.SANDBOX_TTL_HOURS || '48' }}
+      TTL_HOURS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ttl_hours || '' }}
+      REPO_VARS_JSON: ${{ toJson(vars) }}
     steps:
       - name: Select expired sandbox environments
         id: collect
@@ -40,7 +41,16 @@ jobs:
             const activeLabel = 'sandbox-active';
             const marker = '<!-- sandbox-lifecycle-status -->';
             const mode = process.env.JANITOR_MODE;
-            const ttlHours = Number(process.env.TTL_HOURS || '48');
+            const repoVars = JSON.parse(process.env.REPO_VARS_JSON || '{}');
+            const ttlInputRaw = String(process.env.TTL_HOURS || '').trim();
+            const ttlRepoVarRaw = String(repoVars.SANDBOX_TTL_HOURS || '').trim();
+            const ttlHours = Number(ttlInputRaw || ttlRepoVarRaw || '48');
+            if (!Number.isFinite(ttlHours) || ttlHours <= 0) {
+              core.setFailed(
+                `Invalid sandbox TTL value: dispatch='${ttlInputRaw || '(empty)'}', repoVar='${ttlRepoVarRaw || '(empty)'}'. Expected a positive number.`
+              );
+              return;
+            }
             const now = Date.now();
 
             const pulls = await github.paginate(github.rest.pulls.list, {

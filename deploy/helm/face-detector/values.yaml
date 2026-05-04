@@ -6,6 +6,7 @@ backend:
   image:
     repository: ""
     tag: latest
+    digest: ""
     pullPolicy: IfNotPresent
   service:
     name: backend
@@ -23,12 +24,29 @@ backend:
     maxReplicas: 3
     targetCPUUtilizationPercentage: 70
 
+migrationJob:
+  enabled: true
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  command:
+    - alembic
+    - upgrade
+    - head
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
 worker:
   enabled: true
   replicaCount: 1
   image:
     repository: ""
     tag: latest
+    digest: ""
     pullPolicy: IfNotPresent
   command:
     - celery
@@ -65,6 +83,7 @@ frontendAdmin:
   image:
     repository: ""
     tag: latest
+    digest: ""
     pullPolicy: IfNotPresent
   service:
     name: frontend-admin
@@ -75,6 +94,7 @@ nginx:
   image:
     repository: nginx
     tag: 1.27-alpine
+    digest: ""
     pullPolicy: IfNotPresent
   service:
     name: nginx

@@ -1,0 +1,365 @@
+openapi: 3.1.0
+info:
+  title: Face Detector API Contract
+  version: 2026-05-01
+  description: |
+    Source-of-truth API contract for the employee enrollment and face-recognition flow.
+    This contract is shared between backend, admin UI, edge client, and integration smoke tests.
+servers:
+  - url: /api
+tags:
+  - name: auth
+  - name: admin
+  - name: vision
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Issue an admin JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: Invalid username or password
+  /admin/health:
+    get:
+      tags: [admin]
+      summary: Admin healthcheck
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Admin API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    const: ok
+                  scope:
+                    type: string
+                    const: admin
+                required: [status, scope]
+  /admin/employees:
+    get:
+      tags: [admin]
+      summary: List registered employees
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Employee list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeListResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags: [admin]
+      summary: Create a new employee
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeCreate'
+      responses:
+        '201':
+          description: Employee created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeRecord'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Duplicate employee code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/employees/{employee_code}:
+    delete:
+      tags: [admin]
+      summary: Delete an employee by code
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: employee_code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Employee deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeDeleteResponse'
+        '400':
+          description: Blank or invalid employee code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Employee not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/employees/{employee_code}/enroll:
+    post:
+      tags: [admin]
+      summary: Upload a face image and persist an embedding
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: employee_code
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required: [file]
+      responses:
+        '200':
+          description: Face embedding persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeFaceEnrollResponse'
+        '400':
+          description: Invalid file payload or employee code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Employee not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /vision/health:
+    get:
+      tags: [vision]
+      summary: Vision healthcheck
+      responses:
+        '200':
+          description: Vision API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    const: ok
+                  scope:
+                    type: string
+                    const: vision
+                required: [status, scope]
+  /vision/recognize:
+    post:
+      tags: [vision]
+      summary: Recognize a cropped face image
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                device_name:
+                  type: string
+                  nullable: true
+              required: [file]
+      responses:
+        '200':
+          description: Face processed; outcome is encoded in `status`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecognitionResponse'
+        '400':
+          description: Invalid file payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    LoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required: [username, password]
+    Token:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: bearer
+      required: [access_token, token_type]
+    EmployeeCreate:
+      type: object
+      properties:
+        employee_code:
+          type: string
+        full_name:
+          type: string
+        department:
+          type: string
+          nullable: true
+      required: [employee_code, full_name]
+    EmployeeRecord:
+      allOf:
+        - $ref: '#/components/schemas/EmployeeCreate'
+        - type: object
+          properties:
+            active:
+              type: boolean
+              default: true
+          required: [active]
+    EmployeeListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmployeeRecord'
+        total:
+          type: integer
+      required: [items, total]
+    EmployeeDeleteResponse:
+      type: object
+      properties:
+        employee_code:
+          type: string
+        deleted:
+          type: boolean
+      required: [employee_code, deleted]
+    EmployeeFaceEnrollResponse:
+      type: object
+      properties:
+        employee_code:
+          type: string
+        enrolled:
+          type: boolean
+        embedding_dimensions:
+          type: integer
+        message:
+          type: string
+      required: [employee_code, enrolled, embedding_dimensions, message]
+    RecognitionResult:
+      type: object
+      properties:
+        matched:
+          type: boolean
+        employee_code:
+          type: string
+          nullable: true
+        confidence:
+          type: number
+          format: float
+        snapshot_url:
+          type: string
+          nullable: true
+      required: [matched, confidence]
+    RecognitionResponse:
+      type: object
+      properties:
+        device_name:
+          type: string
+          nullable: true
+        filename:
+          type: string
+        status:
+          type: string
+          enum: [granted, rejected]
+        message:
+          type: string
+        result:
+          $ref: '#/components/schemas/RecognitionResult'
+      required: [filename, status, message, result]
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+      required: [detail]

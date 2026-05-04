@@ -120,22 +120,22 @@ jobs:
           AWS_ROLE_PRODUCTION_ARN: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
           STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
           PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
-          SANDBOX_CLUSTER_PREFIX: ${{ vars['SANDBOX_EKS_CLUSTER_PREFIX'] || 'face-detector-sbx' }}
+          SANDBOX_CLUSTER_PREFIX: ${{ vars.SANDBOX_EKS_CLUSTER_PREFIX || 'face-detector-sbx' }}
           STAGING_SNAPSHOT_BUCKET_NAME: ${{ vars.STAGING_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-staging' }}
           PRODUCTION_SNAPSHOT_BUCKET_NAME: ${{ vars.PRODUCTION_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-production' }}
-          SANDBOX_SNAPSHOT_BUCKET_PREFIX: ${{ vars['SANDBOX_SNAPSHOT_BUCKET_PREFIX'] || 'face-detector-sbx' }}
+          SANDBOX_SNAPSHOT_BUCKET_PREFIX: ${{ vars.SANDBOX_SNAPSHOT_BUCKET_PREFIX || 'face-detector-sbx' }}
           STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 'c7i-flex.large' }}
           PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 'm7i-flex.large' }}
-          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 'c7i-flex.large' }}
+          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars.SANDBOX_NODE_INSTANCE_TYPE || 'c7i-flex.large' }}
           STAGING_NODE_MIN_SIZE: ${{ vars.STAGING_NODE_MIN_SIZE || '1' }}
           STAGING_NODE_MAX_SIZE: ${{ vars.STAGING_NODE_MAX_SIZE || '2' }}
           STAGING_NODE_DESIRED_SIZE: ${{ vars.STAGING_NODE_DESIRED_SIZE || '1' }}
           PRODUCTION_NODE_MIN_SIZE: ${{ vars.PRODUCTION_NODE_MIN_SIZE || '2' }}
           PRODUCTION_NODE_MAX_SIZE: ${{ vars.PRODUCTION_NODE_MAX_SIZE || '6' }}
           PRODUCTION_NODE_DESIRED_SIZE: ${{ vars.PRODUCTION_NODE_DESIRED_SIZE || '2' }}
-          SANDBOX_NODE_MIN_SIZE: ${{ vars['SANDBOX_NODE_MIN_SIZE'] || '1' }}
-          SANDBOX_NODE_MAX_SIZE: ${{ vars['SANDBOX_NODE_MAX_SIZE'] || '2' }}
-          SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
+          SANDBOX_NODE_MIN_SIZE: ${{ vars.SANDBOX_NODE_MIN_SIZE || '1' }}
+          SANDBOX_NODE_MAX_SIZE: ${{ vars.SANDBOX_NODE_MAX_SIZE || '2' }}
+          SANDBOX_NODE_DESIRED_SIZE: ${{ vars.SANDBOX_NODE_DESIRED_SIZE || '1' }}
         run: |
           python3 scripts/resolve_workflow_context.py \
             --mode bootstrap \
@@ -197,15 +197,16 @@ jobs:
           CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
         run: echo "EKS cluster $CLUSTER_NAME is not running. Skipping bootstrap."
 
-      - name: Verify promoted image tags exist in Git
+      - name: Verify promoted image digests exist in Git
         if: steps.cluster.outputs.exists == 'true'
         env:
           VALUES_FILE: ${{ steps.context.outputs.values_file }}
           ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
         run: |
-          if grep -q 'tag: latest' "$VALUES_FILE"; then
-            echo "${ENVIRONMENT} values still contain the placeholder tag 'latest'." >&2
-            echo "Run the GitOps promotion workflow first so Git contains immutable image tags." >&2
+          DIGEST_COUNT=$(grep -Ec 'digest:[[:space:]]+"?sha256:[0-9a-f]{64}"?' "$VALUES_FILE" || true)
+          if [ "$DIGEST_COUNT" -lt 4 ]; then
+            echo "${ENVIRONMENT} values do not yet pin backend, worker, frontendAdmin, and nginx by immutable digest." >&2
+            echo "Run the GitOps promotion workflow first so Git contains published OCI digests." >&2
             exit 1
           fi
 
@@ -379,7 +380,7 @@ jobs:
           TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
           TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
           TF_VAR_env_file_path: ${{ steps.runtime-env.outputs.env_file_path }}
-          TF_VAR_kms_key_id: ${{ vars['SSM_KMS_KEY_ID'] || '' }}
+          TF_VAR_kms_key_id: ${{ vars.SSM_KMS_KEY_ID || '' }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
@@ -405,6 +406,7 @@ jobs:
           OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           echo "backend=ghcr.io/${OWNER}/face-detector-backend" >> "$GITHUB_OUTPUT"
           echo "frontend=ghcr.io/${OWNER}/face-detector-admin" >> "$GITHUB_OUTPUT"
+          echo "nginx=ghcr.io/${OWNER}/face-detector-nginx" >> "$GITHUB_OUTPUT"
 
       - name: Install kubectl and gettext
         if: steps.cluster.outputs.exists == 'true'
@@ -507,6 +509,7 @@ jobs:
           TARGET_REVISION: ${{ steps.context.outputs.target_revision }}
           BACKEND_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.backend }}
           FRONTEND_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.frontend }}
+          NGINX_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.nginx }}
           IMAGE_PULL_SECRET_PARAMETER: ${{ steps.ghcr-auth.outputs.parameter_block }}
         run: envsubst < "$APPLICATION_TEMPLATE" | kubectl apply -f -
 
@@ -543,3 +546,40 @@ jobs:
       - name: Show public URL
         if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
         run: echo "Application available at http://${{ steps.public-host.outputs.hostname }}/admin/"
+
+      - name: Install post-deploy smoke test dependencies
+        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        run: python3 -m pip install -r backend/requirements-ci.txt
+
+      - name: Run post-deploy smoke test
+        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        env:
+          FACE_DETECTOR_BASE_URL: http://${{ steps.public-host.outputs.hostname }}
+          FACE_DETECTOR_OBJECT_STORE_MODE: none
+          FACE_DETECTOR_TIMEOUT_SECONDS: "60"
+          DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+        run: |
+          set -a
+          . ./.env.runtime
+          set +a
+
+          export FACE_DETECTOR_ADMIN_USERNAME="$ADMIN_USERNAME"
+          export FACE_DETECTOR_ADMIN_PASSWORD="$ADMIN_PASSWORD"
+
+          case "$DEPLOYMENT_ENVIRONMENT" in
+            sandbox)
+              SMOKE_TARGETS="backend/tests/e2e/test_live_shared_smoke.py backend/tests/e2e/test_live_sandbox_smoke.py"
+              ;;
+            staging)
+              SMOKE_TARGETS="backend/tests/e2e/test_live_shared_smoke.py backend/tests/e2e/test_live_staging_smoke.py"
+              ;;
+            production)
+              SMOKE_TARGETS="backend/tests/e2e/test_live_shared_smoke.py backend/tests/e2e/test_live_production_smoke.py"
+              ;;
+            *)
+              echo "Unsupported deployment environment: $DEPLOYMENT_ENVIRONMENT" >&2
+              exit 1
+              ;;
+          esac
+
+          python3 -m pytest -q -m e2e $SMOKE_TARGETS

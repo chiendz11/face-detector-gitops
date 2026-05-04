@@ -23,7 +23,7 @@ spec:
 {{- end }}
       containers:
         - name: frontend-admin
-          image: "{{ .Values.frontendAdmin.image.repository }}:{{ .Values.frontendAdmin.image.tag }}"
+          image: "{{ include "face-detector.imageRef" .Values.frontendAdmin.image }}"
           imagePullPolicy: {{ .Values.frontendAdmin.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.frontendAdmin.service.port }}
