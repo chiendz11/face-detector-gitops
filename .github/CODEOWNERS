@@ -1,5 +1,16 @@
-# Default owner for repository governance in a solo setup.
+# Enterprise baseline ownership in a solo-maintainer setup.
+# Replace placeholders with teams when available, for example:
+# * @org/developers
+# /.github/workflows/ @org/devops-leads
+# /policies/ @org/security-team
 * @chiendz11
+
+# Trust boundaries for control-plane surfaces.
+/.github/workflows/ @chiendz11
+/policies/ @chiendz11
+
+# Documentation ownership lane.
+/docs/ @chiendz11
 
 # App CI workflows and image-pipeline logic.
 /.github/workflows/app-*.yml @chiendz11
@@ -15,6 +26,8 @@
 # Platform CI and workflow governance.
 /.github/workflows/platform-*.yml @chiendz11
 /.github/workflows/reusable-platform-*.yml @chiendz11
+/.github/workflows/ci-gateway.yml @chiendz11
+/.github/workflows/dependabot-auto-merge.yml @chiendz11
 /.github/actions/setup-conftest/ @chiendz11
 /policies/github/ @chiendz11
 /policies/data/ @chiendz11

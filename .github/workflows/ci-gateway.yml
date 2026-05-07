@@ -1,0 +1,126 @@
+name: CI Gateway
+
+on:
+  pull_request:
+    branches:
+      - master
+      - main
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  security-events: write
+  statuses: write
+
+concurrency:
+  group: ci-gateway-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      app_changed: ${{ steps.classify.outputs.app_changed }}
+      platform_changed: ${{ steps.classify.outputs.platform_changed }}
+      infra_changed: ${{ steps.classify.outputs.infra_changed }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify change lanes
+        id: classify
+        shell: bash
+        run: |
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
+
+          git diff --name-only "$base_sha" "$head_sha" > .changed-files
+
+          app_changed=false
+          platform_changed=false
+          infra_changed=false
+
+          while IFS= read -r path; do
+            case "$path" in
+              backend/*|frontend-admin/*|edge-client/*|nginx/*|docker-compose.yml|docker-compose.ci.yml|.env.example|.trivyignore|scripts/ci-e2e-test.sh|scripts/resolve_registry_digest.py|.github/image-catalog.json|.github/actions/build-images/*|.github/actions/load-images/*|.github/actions/save-images/*|.github/actions/trivy-scan-images/*|.github/actions/sbom-images/*|.github/workflows/app-ci.yml|.github/workflows/reusable-app-ci.yml)
+                app_changed=true
+                ;;
+            esac
+
+            case "$path" in
+              .github/workflows/*|.github/actions/*|.github/CODEOWNERS|.github/dependabot.yml|policies/*|scripts/resolve_workflow_context.py|scripts/resolve_registry_digest.py|scripts/update_gitops_image_locks.py|scripts/evaluate_sandbox_requirement.py|scripts/cleanup_sandbox_aws_orphans.py|scripts/render_sandbox_status_comment.py|scripts/generate-env-from-ssm.sh|scripts/ci-e2e-test.sh|scripts/ci-integration-test.sh|scripts/tests/*)
+                platform_changed=true
+                ;;
+            esac
+
+            case "$path" in
+              terraform/*|deploy/*|policies/kubernetes/*|policies/terraform/*|policies/data/*|scripts/resolve_workflow_context.py|.github/actions/setup-conftest/*|.github/workflows/infra-*.yml|.github/workflows/reusable-infra-*.yml)
+                infra_changed=true
+                ;;
+            esac
+          done < .changed-files
+
+          {
+            echo "app_changed=${app_changed}"
+            echo "platform_changed=${platform_changed}"
+            echo "infra_changed=${infra_changed}"
+          } >> "$GITHUB_OUTPUT"
+
+  verify-app:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.app_changed == 'true'
+    uses: ./.github/workflows/reusable-app-ci.yml
+    with:
+      registry_org: ${{ github.repository_owner }}
+      image_tag: ${{ github.sha }}
+    secrets: inherit
+
+  verify-platform:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.platform_changed == 'true'
+    uses: ./.github/workflows/reusable-platform-ci.yml
+
+  verify-infra:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.infra_changed == 'true'
+    uses: ./.github/workflows/reusable-infra-ci.yml
+
+  gateway:
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changes
+      - verify-app
+      - verify-platform
+      - verify-infra
+    if: always()
+    steps:
+      - name: Enforce lane outcomes
+        shell: bash
+        run: |
+          app_changed="${{ needs.detect-changes.outputs.app_changed }}"
+          platform_changed="${{ needs.detect-changes.outputs.platform_changed }}"
+          infra_changed="${{ needs.detect-changes.outputs.infra_changed }}"
+
+          app_result="${{ needs.verify-app.result }}"
+          platform_result="${{ needs.verify-platform.result }}"
+          infra_result="${{ needs.verify-infra.result }}"
+
+          if [ "$app_changed" = "true" ] && [ "$app_result" != "success" ]; then
+            echo "App lane failed with result: $app_result"
+            exit 1
+          fi
+
+          if [ "$platform_changed" = "true" ] && [ "$platform_result" != "success" ]; then
+            echo "Platform lane failed with result: $platform_result"
+            exit 1
+          fi
+
+          if [ "$infra_changed" = "true" ] && [ "$infra_result" != "success" ]; then
+            echo "Infra lane failed with result: $infra_result"
+            exit 1
+          fi
+
+          echo "CI Gateway passed. app_changed=$app_changed, platform_changed=$platform_changed"
