@@ -14,6 +14,9 @@ inputs:
   catalog_path:
     description: "Repo-relative path to the image catalog JSON file"
     default: ".github/image-catalog.json"
+  ignore_file:
+    description: "Optional Trivy ignore file path"
+    default: ".trivyignore"
   trivy_version:
     description: "Trivy container image version tag"
     default: "0.53.0"
@@ -27,17 +30,34 @@ runs:
         IMAGE_HOST: ${{ inputs.image_host }}
         IMAGE_TAG: ${{ inputs.image_tag }}
         CATALOG: ${{ inputs.catalog_path }}
+        TRIVY_IGNORE_FILE: ${{ inputs.ignore_file }}
         TRIVY_VERSION: ${{ inputs.trivy_version }}
       run: |
         mkdir -p .artifacts/trivy
+        tmp_root="${PWD}/.artifacts/trivy/tmp"
+        mkdir -p "$tmp_root"
+        status=0
+        ignore_mount_args=()
+        ignore_args=()
+        if [ -n "$TRIVY_IGNORE_FILE" ] && [ -f "$TRIVY_IGNORE_FILE" ]; then
+          ignore_mount_args+=( -v "${PWD}/${TRIVY_IGNORE_FILE}:/tmp/trivyignore:ro" )
+          ignore_args+=(--ignorefile /tmp/trivyignore)
+        fi
+
         while IFS= read -r row; do
           name=$(echo "$row" | jq -r '.name')
           repo=$(echo "$row" | jq -r '.repository')
           ref="$IMAGE_HOST/$repo:$IMAGE_TAG"
+          tmp_dir="$tmp_root/$name"
+          rm -rf "$tmp_dir"
+          mkdir -p "$tmp_dir"
           echo "::group::Trivy scan $name"
-          docker run --rm \
+          if ! docker run --rm \
+            -e TMPDIR=/tmp \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "${PWD}/.artifacts/trivy:/reports" \
+            -v "$tmp_dir:/tmp" \
+            "${ignore_mount_args[@]}" \
             "aquasec/trivy:${TRIVY_VERSION}" image \
             --scanners vuln \
             --ignore-unfixed \
@@ -45,6 +65,12 @@ runs:
             --format sarif \
             --output "/reports/${name}.sarif" \
             --exit-code 1 \
-            "$ref"
+            "${ignore_args[@]}" \
+            "$ref"; then
+            status=1
+          fi
+          rm -rf "$tmp_dir"
           echo "::endgroup::"
         done < <(jq -c '.[]' "$CATALOG")
+
+        exit "$status"

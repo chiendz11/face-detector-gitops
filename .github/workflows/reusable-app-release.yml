@@ -1,0 +1,226 @@
+name: Reusable App Release
+
+on:
+  workflow_call:
+    inputs:
+      enable_github_attestations:
+        required: false
+        type: boolean
+        default: false
+      registry_org:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+      catalog_path:
+        required: false
+        type: string
+        default: .github/image-catalog.json
+
+permissions:
+  contents: read
+
+jobs:
+  publish-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      matrix: ${{ steps.resolve-digests.outputs.matrix }}
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Normalize image owner
+        id: image-meta
+        run: echo "owner=$(echo '${{ inputs.registry_org }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker images for publish
+        uses: ./.github/actions/build-images
+        with:
+          image_host: ghcr.io/${{ steps.image-meta.outputs.owner }}
+          image_tag: ${{ inputs.image_tag }}
+          catalog_path: ${{ inputs.catalog_path }}
+
+      - name: Generate SBOMs
+        uses: ./.github/actions/sbom-images
+        with:
+          image_host: ghcr.io/${{ steps.image-meta.outputs.owner }}
+          image_tag: ${{ inputs.image_tag }}
+          catalog_path: ${{ inputs.catalog_path }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_TOKEN != '' && (secrets.GHCR_USERNAME || github.repository_owner) || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Push Docker images
+        env:
+          IMAGE_HOST: ghcr.io/${{ steps.image-meta.outputs.owner }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          CATALOG: ${{ inputs.catalog_path }}
+        run: |
+          while IFS= read -r row; do
+            repo=$(echo "$row" | jq -r '.repository')
+            docker push "$IMAGE_HOST/$repo:$IMAGE_TAG"
+          done < <(jq -c '.[]' "$CATALOG")
+
+      - name: Resolve published image digests
+        id: resolve-digests
+        env:
+          OWNER: ${{ steps.image-meta.outputs.owner }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          CATALOG: ${{ inputs.catalog_path }}
+          REGISTRY_USERNAME: ${{ secrets.GHCR_TOKEN != '' && (secrets.GHCR_USERNAME || github.repository_owner) || github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p .artifacts
+          MATRIX='[]'
+          PUBLISHED_IMAGES='[]'
+          SIGN_TARGETS='[]'
+
+          while IFS= read -r row; do
+            name=$(echo "$row" | jq -r '.name')
+            repo=$(echo "$row" | jq -r '.repository')
+            digest=$(python scripts/resolve_registry_digest.py \
+              --repository "${OWNER}/${repo}" \
+              --reference "$IMAGE_TAG" \
+              --username "$REGISTRY_USERNAME" \
+              --password "$REGISTRY_PASSWORD")
+            subject="ghcr.io/${OWNER}/${repo}"
+            ref="${subject}@${digest}"
+            sbom=".artifacts/sbom/${name}.spdx.json"
+
+            MATRIX=$(echo "$MATRIX" | jq -c \
+              --arg n "$name" --arg repo "$repo" --arg d "$digest" --arg sbom "$sbom" \
+              '. + [{"name": $n, "repository": $repo, "subject_digest": $d, "sbom_path": $sbom}]')
+            PUBLISHED_IMAGES=$(echo "$PUBLISHED_IMAGES" | jq -c \
+              --arg n "$name" --arg r "$subject" --arg t "$IMAGE_TAG" --arg d "$digest" \
+              '. + [{"name": $n, "repository": $r, "tag": $t, "digest": $d}]')
+            SIGN_TARGETS=$(echo "$SIGN_TARGETS" | jq -c \
+              --arg ref "$ref" --arg sbom "$sbom" \
+              '. + [{"ref": $ref, "sbom": $sbom}]')
+          done < <(jq -c '.[]' "$CATALOG")
+
+          echo "$SIGN_TARGETS" > .artifacts/sign-targets.json
+          echo "{\"builder\":{\"repository\":\"${GITHUB_REPOSITORY}\",\"workflow\":\"${GITHUB_WORKFLOW}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"run_attempt\":\"${GITHUB_RUN_ATTEMPT}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"},\"release\":{\"image_tag\":\"${IMAGE_TAG}\",\"catalog_path\":\"${CATALOG}\",\"images\":${PUBLISHED_IMAGES}}}" \
+            > .artifacts/release-provenance.json
+          echo "{\"commit\": \"${IMAGE_TAG}\", \"images\": ${PUBLISHED_IMAGES}}" \
+            > .artifacts/published-images.json
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Sign images and attach SBOM attestations
+        uses: ./.github/actions/sign-images
+
+      - name: Upload publish reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: published-oci-artifacts
+          path: .artifacts
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+
+  check-attestation-support:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: publish-images
+    if: inputs.enable_github_attestations
+    outputs:
+      enabled: ${{ steps.capability.outputs.enabled }}
+      reason: ${{ steps.capability.outputs.reason }}
+    permissions:
+      contents: read
+    steps:
+      - name: Detect GitHub attestation support
+        id: capability
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo_json=$(gh api "repos/${GITHUB_REPOSITORY}")
+          is_private=$(echo "$repo_json" | jq -r '.private')
+          owner_type=$(echo "$repo_json" | jq -r '.owner.type')
+
+          enabled=true
+          reason=supported
+
+          if [[ "$is_private" == "true" && "$owner_type" == "User" ]]; then
+            enabled=false
+            reason=private_user_repo_not_supported
+            echo "::warning::Skipping GitHub artifact attestations: private user-owned repositories are not supported by actions/attest."
+          fi
+
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+
+  attest-published-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - publish-images
+      - check-attestation-support
+    if: needs.publish-images.outputs.matrix != '' && inputs.enable_github_attestations && needs.check-attestation-support.outputs.enabled == 'true'
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.publish-images.outputs.matrix) }}
+    steps:
+      - name: Normalize image owner
+        id: image-meta
+        run: echo "owner=$(echo '${{ inputs.registry_org }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Download publish reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: published-oci-artifacts
+          path: .artifacts
+
+      - name: Generate build provenance attestation
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-name: ghcr.io/${{ steps.image-meta.outputs.owner }}/${{ matrix.repository }}
+          subject-digest: ${{ matrix.subject_digest }}
+          push-to-registry: true
+
+      - name: Generate SBOM attestation
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-name: ghcr.io/${{ steps.image-meta.outputs.owner }}/${{ matrix.repository }}
+          subject-digest: ${{ matrix.subject_digest }}
+          sbom-path: ${{ matrix.sbom_path }}
+          push-to-registry: true
+
+      - name: Verify build provenance attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify \
+            "oci://ghcr.io/${{ steps.image-meta.outputs.owner }}/${{ matrix.repository }}@${{ matrix.subject_digest }}" \
+            -R "${{ github.repository }}" > /dev/null
+
+      - name: Verify SBOM attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify \
+            "oci://ghcr.io/${{ steps.image-meta.outputs.owner }}/${{ matrix.repository }}@${{ matrix.subject_digest }}" \
+            -R "${{ github.repository }}" \
+            --predicate-type https://spdx.dev/Document/v2.3 > /dev/null

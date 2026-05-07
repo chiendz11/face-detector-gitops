@@ -1,0 +1,35 @@
+name: Load Docker Images
+description: >
+  Load previously archived Docker images from tar files produced from the image
+  catalog so downstream jobs can reuse built images without rebuilding.
+
+inputs:
+  catalog_path:
+    description: "Repo-relative path to the image catalog JSON file"
+    default: ".github/image-catalog.json"
+  input_dir:
+    description: "Directory containing image tar archives"
+    default: ".artifacts/images"
+
+runs:
+  using: composite
+  steps:
+    - name: Load images from archives
+      shell: bash
+      env:
+        CATALOG: ${{ inputs.catalog_path }}
+        INPUT_DIR: ${{ inputs.input_dir }}
+      run: |
+        while IFS= read -r row; do
+          name=$(echo "$row" | jq -r '.name')
+          archive="$INPUT_DIR/${name}.tar"
+
+          if [ ! -f "$archive" ]; then
+            echo "Missing image archive: $archive" >&2
+            exit 1
+          fi
+
+          echo "::group::Load $name from $archive"
+          docker load -i "$archive"
+          echo "::endgroup::"
+        done < <(jq -c '.[]' "$CATALOG")

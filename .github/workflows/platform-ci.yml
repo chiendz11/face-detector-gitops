@@ -1,0 +1,56 @@
+name: Platform CI
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".github/CODEOWNERS"
+      - ".github/dependabot.yml"
+      - "policies/**"
+      - ".trivyignore"
+      - "scripts/resolve_workflow_context.py"
+      - "scripts/resolve_registry_digest.py"
+      - "scripts/update_gitops_image_locks.py"
+      - "scripts/evaluate_sandbox_requirement.py"
+      - "scripts/cleanup_sandbox_aws_orphans.py"
+      - "scripts/render_sandbox_status_comment.py"
+      - "scripts/generate-env-from-ssm.sh"
+      - "scripts/ci-e2e-test.sh"
+      - "scripts/ci-integration-test.sh"
+      - "scripts/tests/**"
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".github/CODEOWNERS"
+      - ".github/dependabot.yml"
+      - "policies/**"
+      - ".trivyignore"
+      - "scripts/resolve_workflow_context.py"
+      - "scripts/resolve_registry_digest.py"
+      - "scripts/update_gitops_image_locks.py"
+      - "scripts/evaluate_sandbox_requirement.py"
+      - "scripts/cleanup_sandbox_aws_orphans.py"
+      - "scripts/render_sandbox_status_comment.py"
+      - "scripts/generate-env-from-ssm.sh"
+      - "scripts/ci-e2e-test.sh"
+      - "scripts/ci-integration-test.sh"
+      - "scripts/tests/**"
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: platform-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    uses: ./.github/workflows/reusable-platform-ci.yml

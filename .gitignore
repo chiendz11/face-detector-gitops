@@ -28,3 +28,7 @@ ci_log_final.txt
 ci_log_latest.txt
 staging_log.txt
 
+# Local validation artifacts and tool caches
+.artifacts/
+.tools/
+

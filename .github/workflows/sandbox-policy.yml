@@ -1,0 +1,153 @@
+name: Sandbox Policy
+
+on:
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - labeled
+      - unlabeled
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: sandbox-policy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve changed files
+        shell: bash
+        run: |
+          git fetch --no-tags --prune --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+          mapfile -t changed_files < <(git diff --name-only "origin/${{ github.event.pull_request.base.ref }}"...HEAD)
+          printf '%s\n' "${changed_files[@]}" > .sandbox-policy-files
+
+      - name: Evaluate sandbox blast radius policy
+        run: |
+          mkdir -p .artifacts/sandbox-policy
+          python scripts/evaluate_sandbox_requirement.py \
+            --event-path "$GITHUB_EVENT_PATH" \
+            --changed-files-path .sandbox-policy-files \
+            --report-path .artifacts/sandbox-policy/report.json
+
+      - name: Write sandbox policy summary
+        if: ${{ always() && hashFiles('.artifacts/sandbox-policy/report.json') != '' }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path('.artifacts/sandbox-policy/report.json').read_text(encoding='utf-8'))
+          lines = [
+              '## Sandbox Policy',
+              '',
+              f"- Decision: `{report['decision']}`",
+              f"- Lane: `{report['classification']}`",
+              f"- Branch: `{report['branch']}`",
+              f"- Deploy label present: `{report['hasDeployLabel']}`",
+              '',
+              report['summary'],
+          ]
+
+          if report['reasonGroups']:
+              lines.extend(['', '### Why this PR was classified this way'])
+              for group in report['reasonGroups']:
+                  examples = ', '.join(group.get('examples', [])[:3])
+                  detail = f" Example files: `{examples}`." if examples else ''
+                  lines.append(f"- {group['reason']}.{detail}")
+
+          Path('.artifacts/sandbox-policy/summary.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+          cat .artifacts/sandbox-policy/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upsert sandbox policy PR comment
+        if: ${{ always() && hashFiles('.artifacts/sandbox-policy/report.json') != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPORT_FILE: .artifacts/sandbox-policy/report.json
+        with:
+          script: |
+            const fs = require('fs');
+            const issue_number = Number(process.env.PR_NUMBER);
+            const marker = '<!-- sandbox-policy -->';
+            const report = JSON.parse(fs.readFileSync(process.env.REPORT_FILE, 'utf8'));
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find((comment) =>
+              comment.user.type === 'Bot' && comment.body.includes(marker)
+            );
+
+            if (report.decision !== 'fail') {
+              if (existing) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                });
+              }
+              return;
+            }
+
+            const reasonLines = report.reasonGroups.map((group) => {
+              const examples = (group.examples || []).slice(0, 3).join(', ');
+              return examples
+                ? `- ${group.reason}. Example files: \`${examples}\`.`
+                : `- ${group.reason}.`;
+            });
+
+            const body = [
+              marker,
+              '## Sandbox Policy',
+              '',
+              'This PR is currently classified as a heavy-lane change and is missing a sandbox deploy label.',
+              '',
+              '- Add `deploy-sandbox` or `deploy-preview` if this PR should go through the standard sandbox auto-apply flow.',
+              '- If this should stay in the fast lane, reduce the blast radius or split the change so the heavy-path files are isolated.',
+              '',
+              '### Why this PR is considered heavy',
+              ...reasonLines,
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                body,
+              });
+            }

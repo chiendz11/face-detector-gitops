@@ -9,6 +9,9 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ format('infrastructure-sandbox-{0}', github.event.pull_request.number) }}
   cancel-in-progress: false
@@ -28,7 +31,7 @@ jobs:
     steps:
       - name: Evaluate sandbox destroy policy
         id: gate
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const pr = context.payload.pull_request;

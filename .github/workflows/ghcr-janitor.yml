@@ -1,0 +1,173 @@
+name: GHCR Janitor
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview deletions without removing package versions
+        required: true
+        default: true
+        type: boolean
+      min_age_days:
+        description: Delete only versions older than this many days
+        required: true
+        default: '14'
+        type: string
+      keep_recent:
+        description: Keep at least this many ephemeral versions per package
+        required: true
+        default: '20'
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ghcr-janitor
+  cancel-in-progress: false
+
+jobs:
+  prune-ghcr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Detect package owner scope
+        id: owner-scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo_json=$(gh api "repos/${GITHUB_REPOSITORY}")
+          owner_login=$(echo "$repo_json" | jq -r '.owner.login')
+          owner_type=$(echo "$repo_json" | jq -r '.owner.type')
+
+          api_scope=users
+          if [[ "$owner_type" == "Organization" ]]; then
+            api_scope=orgs
+          fi
+
+          echo "owner_login=$owner_login" >> "$GITHUB_OUTPUT"
+          echo "api_scope=$api_scope" >> "$GITHUB_OUTPUT"
+
+      - name: Prune old GHCR package versions
+        env:
+          API_SCOPE: ${{ steps.owner-scope.outputs.api_scope }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
+          GH_TOKEN: ${{ github.token }}
+          KEEP_RECENT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.keep_recent || '20' }}
+          MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.min_age_days || '14' }}
+          OWNER_LOGIN: ${{ steps.owner-scope.outputs.owner_login }}
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          catalog = json.loads(Path('.github/image-catalog.json').read_text(encoding='utf-8'))
+          owner_login = os.environ['OWNER_LOGIN']
+          api_scope = os.environ['API_SCOPE']
+          dry_run = os.environ['DRY_RUN'].lower() == 'true'
+          min_age_days = int(os.environ['MIN_AGE_DAYS'])
+          keep_recent = int(os.environ['KEEP_RECENT'])
+          now = datetime.now(timezone.utc)
+          cutoff = now - timedelta(days=min_age_days)
+          sha_tag_re = re.compile(r'^[0-9a-f]{40}$')
+          cosign_tag_re = re.compile(r'^sha256-[0-9a-f]{64}\.(sig|att)$')
+
+          if keep_recent < 0:
+              raise SystemExit('KEEP_RECENT must be >= 0')
+          if min_age_days < 0:
+              raise SystemExit('MIN_AGE_DAYS must be >= 0')
+
+          summary_lines: list[str] = [
+              '# GHCR Janitor',
+              '',
+              f'- dry_run: `{dry_run}`',
+              f'- min_age_days: `{min_age_days}`',
+              f'- keep_recent: `{keep_recent}`',
+              '',
+          ]
+
+          def gh_api(*args: str) -> str:
+              completed = subprocess.run(
+                  ['gh', 'api', *args],
+                  check=True,
+                  text=True,
+                  capture_output=True,
+              )
+              return completed.stdout
+
+          def is_ephemeral(tags: list[str]) -> bool:
+              if not tags:
+                  return True
+              return all(sha_tag_re.fullmatch(tag) or cosign_tag_re.fullmatch(tag) for tag in tags)
+
+          total_deleted = 0
+          total_candidates = 0
+
+          for image in catalog:
+              package_name = image['repository']
+              endpoint = f'/{api_scope}/{owner_login}/packages/container/{package_name}/versions?per_page=100'
+              raw = gh_api('--paginate', '--slurp', endpoint)
+              pages = json.loads(raw or '[]')
+              versions = [item for page in pages for item in page]
+
+              ephemeral_versions = []
+              for version in versions:
+                  tags = ((version.get('metadata') or {}).get('container') or {}).get('tags') or []
+                  if not is_ephemeral(tags):
+                      continue
+                  ephemeral_versions.append(
+                      {
+                          'id': version['id'],
+                          'created_at': datetime.fromisoformat(version['created_at'].replace('Z', '+00:00')),
+                          'tags': tags,
+                      }
+                  )
+
+              ephemeral_versions.sort(key=lambda item: item['created_at'], reverse=True)
+              protected_ids = {item['id'] for item in ephemeral_versions[:keep_recent]}
+              deletions = [
+                  item for item in ephemeral_versions
+                  if item['id'] not in protected_ids and item['created_at'] < cutoff
+              ]
+
+              total_candidates += len(deletions)
+              summary_lines.append(f'## {package_name}')
+              summary_lines.append(f'- ephemeral versions found: `{len(ephemeral_versions)}`')
+              summary_lines.append(f'- candidates older than cutoff: `{len(deletions)}`')
+
+              if not deletions:
+                  summary_lines.append('- action: no deletions')
+                  summary_lines.append('')
+                  continue
+
+              for item in deletions:
+                  tag_label = ','.join(item['tags']) if item['tags'] else '(untagged)'
+                  summary_lines.append(f'- candidate id `{item["id"]}` tags `{tag_label}` created `{item["created_at"].isoformat()}`')
+                  if dry_run:
+                      continue
+
+                  delete_endpoint = f'/{api_scope}/{owner_login}/packages/container/{package_name}/versions/{item["id"]}'
+                  gh_api('-X', 'DELETE', delete_endpoint)
+                  total_deleted += 1
+
+              summary_lines.append('')
+
+          summary_lines.append(f'Total candidate deletions: `{total_candidates}`')
+          summary_lines.append(f'Total deleted: `{total_deleted}`')
+          summary_text = '\n'.join(summary_lines) + '\n'
+          Path(os.environ['GITHUB_STEP_SUMMARY']).write_text(summary_text, encoding='utf-8')
+          sys.stdout.write(summary_text)
+          PY

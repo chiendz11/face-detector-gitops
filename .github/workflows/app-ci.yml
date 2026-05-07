@@ -1,0 +1,43 @@
+name: App CI
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "backend/**"
+      - "frontend-admin/**"
+      - "edge-client/**"
+      - "nginx/**"
+      - "docker-compose.yml"
+      - "docker-compose.ci.yml"
+      - ".trivyignore"
+      - ".env.example"
+      - "scripts/ci-e2e-test.sh"
+      - "scripts/resolve_registry_digest.py"
+      - ".github/image-catalog.json"
+      - ".github/actions/build-images/**"
+      - ".github/actions/load-images/**"
+      - ".github/actions/save-images/**"
+      - ".github/actions/trivy-scan-images/**"
+      - ".github/actions/sbom-images/**"
+      - ".github/workflows/app-ci.yml"
+      - ".github/workflows/reusable-app-ci.yml"
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  security-events: write
+
+concurrency:
+  group: app-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    uses: ./.github/workflows/reusable-app-ci.yml
+    with:
+      registry_org: ${{ github.repository_owner }}
+      image_tag: ${{ github.sha }}
+    secrets: inherit

@@ -1,0 +1,178 @@
+name: Reusable Infra CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-and-helm-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive terraform
+
+      - name: Terraform init for SSM
+        working-directory: terraform/ssm
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate for SSM
+        working-directory: terraform/ssm
+        run: terraform validate
+
+      - name: Terraform init for bootstrap
+        working-directory: terraform/bootstrap
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate for bootstrap
+        working-directory: terraform/bootstrap
+        run: terraform validate
+
+      - name: Terraform init for EKS
+        working-directory: terraform/eks
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate for EKS
+        working-directory: terraform/eks
+        run: terraform validate
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.14.4
+
+      - name: Set up Conftest
+        uses: ./.github/actions/setup-conftest
+
+      - name: Lint Helm chart
+        run: helm lint deploy/helm/face-detector
+
+      - name: Render Helm chart variants
+        run: |
+          mkdir -p .artifacts/helm
+          helm template face-detector deploy/helm/face-detector \
+            --set backend.image.repository=ghcr.io/example/face-detector-backend \
+            --set worker.image.repository=ghcr.io/example/face-detector-backend \
+            --set frontendAdmin.image.repository=ghcr.io/example/face-detector-admin \
+            --set nginx.image.repository=ghcr.io/example/face-detector-nginx \
+            -f deploy/helm/face-detector/values-staging.yaml > .artifacts/helm/staging.yaml
+          helm template face-detector deploy/helm/face-detector \
+            --set backend.image.repository=ghcr.io/example/face-detector-backend \
+            --set worker.image.repository=ghcr.io/example/face-detector-backend \
+            --set frontendAdmin.image.repository=ghcr.io/example/face-detector-admin \
+            --set nginx.image.repository=ghcr.io/example/face-detector-nginx \
+            -f deploy/helm/face-detector/values-production.yaml > .artifacts/helm/production.yaml
+
+      - name: Run Kubernetes manifest policy checks
+        run: |
+          conftest test \
+            --policy policies/kubernetes \
+            --data policies/data \
+            .artifacts/helm/staging.yaml \
+            .artifacts/helm/production.yaml
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile workflow context helper
+        run: python -m py_compile scripts/resolve_workflow_context.py
+
+  iac-policy-advisory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Conftest
+        uses: ./.github/actions/setup-conftest
+
+      - name: Run Terraform policy checks
+        run: |
+          set -o pipefail
+          mkdir -p .artifacts/pac
+          mapfile -t terraform_targets < <(
+            find terraform \
+              -path '*/.terraform/*' -prune -o \
+              -type f -name '*.tf' -print | sort
+          )
+
+          if [ "${#terraform_targets[@]}" -eq 0 ]; then
+            echo 'No Terraform sources found.'
+            exit 0
+          fi
+
+          conftest test \
+            --policy policies/terraform \
+            --data policies/data \
+            "${terraform_targets[@]}" | tee .artifacts/pac/terraform-policy.txt
+
+      - name: Upload Terraform policy report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: terraform-policy-report
+          path: .artifacts/pac
+          if-no-files-found: warn
+
+  iac-advisory-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Checkov
+        run: python -m pip install checkov
+
+      - name: Run Checkov advisory scan
+        run: |
+          mkdir -p .artifacts/checkov
+          checkov -d terraform \
+            --framework terraform \
+            --download-external-modules false \
+            --skip-path .terraform \
+            --soft-fail
+          checkov -d terraform \
+            --framework terraform \
+            --download-external-modules false \
+            --skip-path .terraform \
+            --soft-fail \
+            --output sarif \
+            --output-file-path .artifacts/checkov/checkov.sarif
+
+      - name: Upload Checkov SARIF artifact
+        if: always() && hashFiles('.artifacts/checkov/checkov.sarif') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: checkov-sarif
+          path: .artifacts/checkov/checkov.sarif
+
+      - name: Upload Checkov SARIF to code scanning
+        if: always() && hashFiles('.artifacts/checkov/checkov.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@0daab03d71ff584ef619d027a3fd9146679c5d84 # v3
+        with:
+          sarif_file: .artifacts/checkov/checkov.sarif
+          category: infra-checkov

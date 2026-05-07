@@ -88,11 +88,12 @@ frontendAdmin:
   service:
     name: frontend-admin
     port: 80
+    containerPort: 8080
 
 nginx:
   replicaCount: 1
   image:
-    repository: nginx
+    repository: ""
     tag: 1.27-alpine
     digest: ""
     pullPolicy: IfNotPresent
@@ -100,5 +101,6 @@ nginx:
     name: nginx
     type: LoadBalancer
     port: 80
+    containerPort: 8080
     annotations:
       service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing

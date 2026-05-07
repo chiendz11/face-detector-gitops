@@ -6,11 +6,18 @@ metadata:
     app.kubernetes.io/name: face-detector
     app.kubernetes.io/component: nginx
 data:
-  nginx.conf: |
+  nginx.conf.template: |
+    pid /tmp/nginx.pid;
+
     events {}
 
     http {
       limit_req_zone $binary_remote_addr zone=api_req:10m rate=5r/s;
+      client_body_temp_path /tmp/client_temp;
+      proxy_temp_path /tmp/proxy_temp;
+      fastcgi_temp_path /tmp/fastcgi_temp;
+      uwsgi_temp_path /tmp/uwsgi_temp;
+      scgi_temp_path /tmp/scgi_temp;
 
       upstream backend_upstream {
         server {{ .Values.backend.service.name }}:{{ .Values.backend.service.port }};
@@ -21,7 +28,7 @@ data:
       }
 
       server {
-        listen 80;
+        listen {{ .Values.nginx.service.containerPort }};
         server_name _;
         client_max_body_size 20m;
 
@@ -74,20 +81,29 @@ spec:
         app.kubernetes.io/name: face-detector
         app.kubernetes.io/component: nginx
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: nginx
           image: "{{ include "face-detector.imageRef" .Values.nginx.image }}"
           imagePullPolicy: {{ .Values.nginx.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
           ports:
-            - containerPort: {{ .Values.nginx.service.port }}
+            - containerPort: {{ .Values.nginx.service.containerPort }}
           volumeMounts:
             - name: nginx-config
-              mountPath: /etc/nginx/nginx.conf
-              subPath: nginx.conf
+              mountPath: /etc/nginx/templates/nginx.conf.template
+              subPath: nginx.conf.template
           readinessProbe:
             httpGet:
               path: /admin/
-              port: {{ .Values.nginx.service.port }}
+              port: {{ .Values.nginx.service.containerPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
       volumes:
@@ -113,5 +129,5 @@ spec:
   ports:
     - name: http
       port: {{ .Values.nginx.service.port }}
-      targetPort: {{ .Values.nginx.service.port }}
+      targetPort: {{ .Values.nginx.service.containerPort }}
   type: {{ .Values.nginx.service.type }}

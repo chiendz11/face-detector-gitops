@@ -264,6 +264,8 @@ The promotion workflows commit with `[skip ci]` so GitOps config updates do not 
 
 There is intentionally no automatic per-PR application preview environment in this setup. The infrastructure sandbox is now an exact-state-per-PR environment with cost gates and janitor cleanup, but it remains tightly controlled because EKS and RDS are expensive.
 
+Reviewer-facing rules for when to request `deploy-sandbox` or `deploy-preview` now live in `docs/sandbox-decision-matrix.md`, including the heavy-lane versus fast-lane split, the CI-green prerequisite for auto-apply, and the mandatory auto-destroy lifecycle.
+
 For the trust boundary, keep the sandbox AWS role limited to `main`, `master`, and `devops/*` trusted refs. Protect `devops/*` with GitHub branch rules, and require DevOps approval for `.github/workflows/*` and `aws/github-oidc-*` through `CODEOWNERS` once you have more than one maintainer. If you want AWS to validate the exact reusable workflow path, not just the trusted ref, you must customize GitHub's OIDC `sub` claim to include `job_workflow_ref` and then match that customized `sub` in AWS. If you later move AWS role ARNs into a GitHub Environment such as `Sandbox-Internal`, update the AWS trust policy to match the environment-based OIDC subject because GitHub changes the default `sub` claim for jobs that reference an environment.
 
 If you are working solo, keep the same separation anyway: use `feature/*` or `dev/*` for app work, and reserve `devops/*` for Terraform, workflow, and OIDC experiments. That keeps your everyday application flow simple while preserving a clean high-risk lane for infrastructure changes.

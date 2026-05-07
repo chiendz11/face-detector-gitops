@@ -35,6 +35,9 @@ on:
         required: false
         default: ""
 
+permissions:
+  contents: read
+
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -47,9 +50,72 @@ jobs:
       TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.source_ref_name }}
+
+      - name: Load workflow repo defaults
+        env:
+          AWS_ROLE_SANDBOX_ARN_SECRET: ${{ secrets.AWS_ROLE_SANDBOX_ARN || '' }}
+          AWS_ROLE_STAGING_ARN_SECRET: ${{ secrets.AWS_ROLE_STAGING_ARN || '' }}
+          AWS_ROLE_PRODUCTION_ARN_SECRET: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || '' }}
+          REPO_VARS_JSON: ${{ toJson(vars) }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          import os
+
+          repo_vars = json.loads(os.environ.get("REPO_VARS_JSON") or "{}")
+
+          def repo(name: str, default: str = "") -> str:
+            value = repo_vars.get(name)
+            if value in (None, ""):
+              return default
+            return str(value)
+
+          def first_non_empty(*values: str, default: str = "") -> str:
+            for value in values:
+              if value not in (None, ""):
+                return str(value)
+            return default
+
+          values = {
+            "AWS_ROLE_SANDBOX_ARN": first_non_empty(
+              os.environ.get("AWS_ROLE_SANDBOX_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_SANDBOX_ARN"),
+            ),
+            "AWS_ROLE_STAGING_ARN": first_non_empty(
+              os.environ.get("AWS_ROLE_STAGING_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_STAGING_ARN"),
+            ),
+            "AWS_ROLE_PRODUCTION_ARN": first_non_empty(
+              os.environ.get("AWS_ROLE_PRODUCTION_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_PRODUCTION_ARN"),
+            ),
+            "STAGING_CLUSTER_NAME": repo("STAGING_EKS_CLUSTER_NAME", "face-detector-staging"),
+            "PRODUCTION_CLUSTER_NAME": repo("PRODUCTION_EKS_CLUSTER_NAME", "face-detector-production"),
+            "SANDBOX_CLUSTER_PREFIX": repo("SANDBOX_EKS_CLUSTER_PREFIX", "face-detector-sbx"),
+            "STAGING_SNAPSHOT_BUCKET_NAME": repo("STAGING_SNAPSHOT_BUCKET_NAME", "face-detector-employee-images-staging"),
+            "PRODUCTION_SNAPSHOT_BUCKET_NAME": repo("PRODUCTION_SNAPSHOT_BUCKET_NAME", "face-detector-employee-images-production"),
+            "SANDBOX_SNAPSHOT_BUCKET_PREFIX": repo("SANDBOX_SNAPSHOT_BUCKET_PREFIX", "face-detector-sbx"),
+            "STAGING_NODE_INSTANCE_TYPE": repo("STAGING_NODE_INSTANCE_TYPE", "c7i-flex.large"),
+            "PRODUCTION_NODE_INSTANCE_TYPE": repo("PRODUCTION_NODE_INSTANCE_TYPE", "m7i-flex.large"),
+            "SANDBOX_NODE_INSTANCE_TYPE": repo("SANDBOX_NODE_INSTANCE_TYPE", "c7i-flex.large"),
+            "STAGING_NODE_MIN_SIZE": repo("STAGING_NODE_MIN_SIZE", "1"),
+            "STAGING_NODE_MAX_SIZE": repo("STAGING_NODE_MAX_SIZE", "2"),
+            "STAGING_NODE_DESIRED_SIZE": repo("STAGING_NODE_DESIRED_SIZE", "1"),
+            "PRODUCTION_NODE_MIN_SIZE": repo("PRODUCTION_NODE_MIN_SIZE", "2"),
+            "PRODUCTION_NODE_MAX_SIZE": repo("PRODUCTION_NODE_MAX_SIZE", "6"),
+            "PRODUCTION_NODE_DESIRED_SIZE": repo("PRODUCTION_NODE_DESIRED_SIZE", "2"),
+            "SANDBOX_NODE_MIN_SIZE": repo("SANDBOX_NODE_MIN_SIZE", "1"),
+            "SANDBOX_NODE_MAX_SIZE": repo("SANDBOX_NODE_MAX_SIZE", "2"),
+            "SANDBOX_NODE_DESIRED_SIZE": repo("SANDBOX_NODE_DESIRED_SIZE", "1"),
+            "SSM_KMS_KEY_ID": repo("SSM_KMS_KEY_ID"),
+          }
+
+          for key, value in values.items():
+            print(f"{key}={value}")
+          PY
 
       - name: Resolve sandbox plan context
         id: context
@@ -63,27 +129,6 @@ jobs:
           GIT_SHA: ${{ inputs.source_git_sha }}
           RELEASE_TAG: ""
           GITHUB_TOKEN: ${{ github.token }}
-          AWS_ROLE_SANDBOX_ARN: ${{ secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
-          AWS_ROLE_STAGING_ARN: ${{ secrets.AWS_ROLE_STAGING_ARN || vars['AWS_ROLE_STAGING_ARN'] || '' }}
-          AWS_ROLE_PRODUCTION_ARN: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
-          STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
-          PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
-          SANDBOX_CLUSTER_PREFIX: ${{ vars['SANDBOX_EKS_CLUSTER_PREFIX'] || 'face-detector-sbx' }}
-          STAGING_SNAPSHOT_BUCKET_NAME: ${{ vars.STAGING_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-staging' }}
-          PRODUCTION_SNAPSHOT_BUCKET_NAME: ${{ vars.PRODUCTION_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-production' }}
-          SANDBOX_SNAPSHOT_BUCKET_PREFIX: ${{ vars['SANDBOX_SNAPSHOT_BUCKET_PREFIX'] || 'face-detector-sbx' }}
-          STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 'c7i-flex.large' }}
-          PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 'm7i-flex.large' }}
-          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 'c7i-flex.large' }}
-          STAGING_NODE_MIN_SIZE: ${{ vars.STAGING_NODE_MIN_SIZE || '1' }}
-          STAGING_NODE_MAX_SIZE: ${{ vars.STAGING_NODE_MAX_SIZE || '2' }}
-          STAGING_NODE_DESIRED_SIZE: ${{ vars.STAGING_NODE_DESIRED_SIZE || '1' }}
-          PRODUCTION_NODE_MIN_SIZE: ${{ vars.PRODUCTION_NODE_MIN_SIZE || '2' }}
-          PRODUCTION_NODE_MAX_SIZE: ${{ vars.PRODUCTION_NODE_MAX_SIZE || '6' }}
-          PRODUCTION_NODE_DESIRED_SIZE: ${{ vars.PRODUCTION_NODE_DESIRED_SIZE || '2' }}
-          SANDBOX_NODE_MIN_SIZE: ${{ vars['SANDBOX_NODE_MIN_SIZE'] || '1' }}
-          SANDBOX_NODE_MAX_SIZE: ${{ vars['SANDBOX_NODE_MAX_SIZE'] || '2' }}
-          SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
         run: |
           python3 scripts/resolve_workflow_context.py \
             --mode plan \
@@ -121,14 +166,14 @@ jobs:
             --role-production-arn "$AWS_ROLE_PRODUCTION_ARN"
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ steps.context.outputs.aws_role_arn }}
           role-session-name: gha-pr-plan-${{ github.run_id }}
           aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: "1.6.6"
 
@@ -241,8 +286,8 @@ jobs:
           TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
           TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
           TF_VAR_env_file_path: ${{ steps.runtime-env.outputs.env_file_path }}
-          TF_VAR_kms_key_id: ${{ vars['SSM_KMS_KEY_ID'] || '' }}
         run: |
+          export TF_VAR_kms_key_id="${SSM_KMS_KEY_ID:-}"
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
@@ -327,7 +372,7 @@ jobs:
           PY
 
       - name: Publish PR plan comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           COMMENT_FILE: ${{ runner.temp }}/terraform-plan-comment.md
           PR_NUMBER: ${{ inputs.pull_request_number }}

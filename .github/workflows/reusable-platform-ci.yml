@@ -1,0 +1,191 @@
+name: Reusable Platform CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve changed platform files
+        id: changed-platform
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            base_ref="HEAD^1"
+          else
+            base_ref="HEAD^"
+          fi
+
+          mapfile -t changed_files < <(git diff --name-only "$base_ref" HEAD -- \
+            .github/workflows \
+            .github/actions \
+            .github/CODEOWNERS \
+            .github/dependabot.yml \
+            policies \
+            .trivyignore \
+            scripts)
+
+          printf '%s\n' "${changed_files[@]}" > .platform-changed-files
+          {
+            echo 'files<<EOF'
+            printf '%s\n' "${changed_files[@]}"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Lint GitHub Actions workflows
+        run: |
+          mapfile -t lint_targets < <(
+            while IFS= read -r path; do
+              case "$path" in
+                .github/workflows/*.yml)
+                  if [ -f "$path" ]; then
+                    printf '%s\n' "$path"
+                  fi
+                  ;;
+              esac
+            done < .platform-changed-files
+          )
+
+          if [ "${#lint_targets[@]}" -eq 0 ]; then
+            echo "No workflow or composite action changes detected."
+            exit 0
+          fi
+
+          docker run --rm \
+            -v "${PWD}:/workdir" \
+            -w /workdir \
+            rhysd/actionlint:1.7.8 \
+            "${lint_targets[@]}"
+
+  platform-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve changed platform files
+        id: changed-platform
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            base_ref="HEAD^1"
+          else
+            base_ref="HEAD^"
+          fi
+
+          mapfile -t changed_files < <(git diff --name-only "$base_ref" HEAD -- \
+            .github/workflows \
+            .github/actions \
+            .github/CODEOWNERS \
+            .github/dependabot.yml \
+            policies \
+            .trivyignore \
+            scripts)
+
+          printf '%s\n' "${changed_files[@]}" > .platform-changed-files
+
+      - name: Set up Conftest
+        uses: ./.github/actions/setup-conftest
+
+      - name: Validate GitHub workflow governance
+        run: |
+          mapfile -t workflow_targets < <(find .github/workflows -maxdepth 1 -type f -name '*.yml' | sort)
+          conftest test \
+            --policy policies/github/workflows \
+            --data policies/data \
+            "${workflow_targets[@]}"
+
+      - name: Validate composite action governance
+        run: |
+          mapfile -t action_targets < <(find .github/actions -mindepth 2 -maxdepth 2 -type f -name 'action.yml' | sort)
+
+          if [ "${#action_targets[@]}" -eq 0 ]; then
+            echo 'No composite actions found.'
+            exit 0
+          fi
+
+          conftest test \
+            --policy policies/github/actions \
+            --data policies/data \
+            "${action_targets[@]}"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate CODEOWNERS trust boundaries
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          codeowners = Path('.github/CODEOWNERS').read_text(encoding='utf-8')
+          required_entries = [
+            '/.github/workflows/platform-*.yml',
+            '/.github/workflows/reusable-platform-*.yml',
+          ]
+
+          for entry in required_entries:
+            if entry not in codeowners:
+              raise SystemExit(f'Missing CODEOWNERS entry: {entry}')
+          PY
+
+      - name: Validate JSON configs
+        run: |
+          if grep -Fxq '.github/image-catalog.json' .platform-changed-files; then
+            python -m json.tool .github/image-catalog.json > /dev/null
+          else
+            echo 'No JSON config changes detected.'
+          fi
+
+      - name: Validate shell helpers
+        run: |
+          while IFS= read -r path; do
+            case "$path" in
+              scripts/*.sh)
+                bash -n "$path"
+                ;;
+            esac
+          done < .platform-changed-files
+
+      - name: Compile workflow helper scripts
+        run: |
+          mapfile -t python_targets < <(grep -E '^scripts/.+\.py$' .platform-changed-files || true)
+
+          if [ "${#python_targets[@]}" -eq 0 ]; then
+            echo 'No Python helper changes detected.'
+            exit 0
+          fi
+
+          python -m py_compile "${python_targets[@]}"
+
+      - name: Detect workflow contract targets
+        id: release-contracts
+        shell: bash
+        run: |
+          if grep -Eq '^(\.github/actions/sign-images/action\.yml|\.github/workflows/(gitops-staging|gitops-production|reusable-app-ci|reusable-app-release|sandbox-policy)\.yml|policies/licenses/policy\.json|scripts/(check_dependency_licenses|evaluate_sandbox_requirement|update_gitops_image_locks)\.py|scripts/tests/test_.*\.py)$' .platform-changed-files; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install workflow contract test dependencies
+        if: steps.release-contracts.outputs.run == 'true'
+        run: python -m pip install pyyaml
+
+      - name: Run workflow contract checks
+        if: steps.release-contracts.outputs.run == 'true'
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v

@@ -1,0 +1,40 @@
+name: App Release
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "backend/**"
+      - "frontend-admin/**"
+      - "edge-client/**"
+      - "nginx/**"
+      - "docker-compose.yml"
+      - "docker-compose.ci.yml"
+      - ".env.example"
+      - "scripts/ci-e2e-test.sh"
+      - "scripts/resolve_registry_digest.py"
+      - ".github/image-catalog.json"
+      - ".github/actions/build-images/**"
+      - ".github/actions/sbom-images/**"
+      - ".github/workflows/app-release.yml"
+      - ".github/workflows/reusable-app-release.yml"
+      - ".github/actions/sign-images/**"
+
+permissions:
+  attestations: write
+  contents: read
+  id-token: write
+  packages: write
+
+concurrency:
+  group: app-release-${{ github.ref }}
+
+jobs:
+  publish:
+    uses: ./.github/workflows/reusable-app-release.yml
+    with:
+      enable_github_attestations: true
+      registry_org: ${{ github.repository_owner }}
+      image_tag: ${{ github.sha }}
+    secrets: inherit

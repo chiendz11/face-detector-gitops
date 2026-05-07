@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -16,24 +17,58 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
-    path = Path(args.values_file)
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-
+def apply_image_locks(
+    data: dict[str, Any] | None,
+    image_tag: str,
+    backend_digest: str,
+    frontend_digest: str,
+    nginx_digest: str,
+) -> dict[str, Any]:
+    values = data or {}
     component_digests = {
-        "backend": args.backend_digest,
-        "worker": args.backend_digest,
-        "frontendAdmin": args.frontend_digest,
-        "nginx": args.nginx_digest,
+        "backend": backend_digest,
+        "worker": backend_digest,
+        "frontendAdmin": frontend_digest,
+        "nginx": nginx_digest,
     }
 
     for component, digest in component_digests.items():
-        image = data.setdefault(component, {}).setdefault("image", {})
-        image["tag"] = args.image_tag
+        image = values.setdefault(component, {}).setdefault("image", {})
+        image["tag"] = image_tag
         image["digest"] = digest
 
-    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return values
+
+
+def update_values_file(
+    values_file: str | Path,
+    image_tag: str,
+    backend_digest: str,
+    frontend_digest: str,
+    nginx_digest: str,
+) -> dict[str, Any]:
+    path = Path(values_file)
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    updated = apply_image_locks(
+        data,
+        image_tag=image_tag,
+        backend_digest=backend_digest,
+        frontend_digest=frontend_digest,
+        nginx_digest=nginx_digest,
+    )
+    path.write_text(yaml.safe_dump(updated, sort_keys=False), encoding="utf-8")
+    return updated
+
+
+def main() -> int:
+    args = parse_args()
+    update_values_file(
+        args.values_file,
+        image_tag=args.image_tag,
+        backend_digest=args.backend_digest,
+        frontend_digest=args.frontend_digest,
+        nginx_digest=args.nginx_digest,
+    )
     return 0
 
 

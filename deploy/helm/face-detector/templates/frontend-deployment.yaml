@@ -21,22 +21,31 @@ spec:
       imagePullSecrets:
 {{ toYaml . | indent 8 }}
 {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: frontend-admin
           image: "{{ include "face-detector.imageRef" .Values.frontendAdmin.image }}"
           imagePullPolicy: {{ .Values.frontendAdmin.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
           ports:
-            - containerPort: {{ .Values.frontendAdmin.service.port }}
+            - containerPort: {{ .Values.frontendAdmin.service.containerPort }}
           readinessProbe:
             httpGet:
               path: /
-              port: {{ .Values.frontendAdmin.service.port }}
+              port: {{ .Values.frontendAdmin.service.containerPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /
-              port: {{ .Values.frontendAdmin.service.port }}
+              port: {{ .Values.frontendAdmin.service.containerPort }}
             initialDelaySeconds: 15
             periodSeconds: 15
 ---
@@ -54,5 +63,5 @@ spec:
   ports:
     - name: http
       port: {{ .Values.frontendAdmin.service.port }}
-      targetPort: {{ .Values.frontendAdmin.service.port }}
+      targetPort: {{ .Values.frontendAdmin.service.containerPort }}
   type: ClusterIP

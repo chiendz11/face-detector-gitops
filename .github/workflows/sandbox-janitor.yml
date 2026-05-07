@@ -19,6 +19,13 @@ on:
         required: false
         default: '48'
 
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-janitor
+  cancel-in-progress: false
+
 jobs:
   select-candidates:
     runs-on: ubuntu-latest
@@ -35,7 +42,7 @@ jobs:
     steps:
       - name: Select expired sandbox environments
         id: collect
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const activeLabel = 'sandbox-active';

@@ -1,0 +1,24 @@
+name: Set Up Conftest
+description: Install a pinned Conftest binary for policy-as-code enforcement.
+
+inputs:
+  version:
+    description: Conftest release version without the leading v
+    default: "0.59.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Conftest
+      shell: bash
+      env:
+        CONFTEST_VERSION: ${{ inputs.version }}
+      run: |
+        archive="conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz"
+        download_url="https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/${archive}"
+
+        curl -sSL "$download_url" -o "$RUNNER_TEMP/$archive"
+        tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" conftest
+        chmod +x "$RUNNER_TEMP/conftest"
+        echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/conftest" --version

@@ -1,0 +1,44 @@
+name: Infra CI
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "terraform/**"
+      - "deploy/**"
+      - "policies/kubernetes/**"
+      - "policies/terraform/**"
+      - "policies/data/**"
+      - "scripts/resolve_workflow_context.py"
+      - ".github/actions/setup-conftest/**"
+      - ".github/workflows/infra-*.yml"
+      - ".github/workflows/reusable-infra-*.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "terraform/**"
+      - "deploy/**"
+      - "policies/kubernetes/**"
+      - "policies/terraform/**"
+      - "policies/data/**"
+      - "scripts/resolve_workflow_context.py"
+      - ".github/actions/setup-conftest/**"
+      - ".github/workflows/infra-*.yml"
+      - ".github/workflows/reusable-infra-*.yml"
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  security-events: write
+  statuses: write
+
+concurrency:
+  group: infra-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    uses: ./.github/workflows/reusable-infra-ci.yml

@@ -1,6 +1,7 @@
 name: Sign Images and Attest SBOMs
 description: >
-  Cosign-sign each pushed image and attach its SBOM as an attestation.
+  Cosign-sign each pushed image, attach its SBOM as an attestation, and verify
+  the resulting release signatures.
   Reads sign targets from .artifacts/sign-targets.json
   (array of {ref: string, sbom: string}).
   Assumes cosign is already installed (sigstore/cosign-installer).
@@ -11,11 +12,22 @@ runs:
     - name: Sign images and attach SBOM attestations
       shell: bash
       run: |
+        identity_regexp="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/[^@]+@.*$"
+
         while IFS= read -r row; do
           ref=$(echo "$row" | jq -r '.ref')
           sbom=$(echo "$row" | jq -r '.sbom')
           echo "::group::Sign $ref"
           cosign sign --yes "$ref"
           cosign attest --yes --type spdxjson --predicate "$sbom" "$ref"
+          cosign verify \
+            --certificate-identity-regexp "$identity_regexp" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$ref" > /dev/null
+          cosign verify-attestation \
+            --type spdxjson \
+            --certificate-identity-regexp "$identity_regexp" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$ref" > /dev/null
           echo "::endgroup::"
         done < <(jq -c '.[]' .artifacts/sign-targets.json)

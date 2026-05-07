@@ -72,14 +72,6 @@ on:
         options:
           - apply
           - destroy
-      cluster_name:
-        description: Deprecated. Sandbox cluster names are derived from the PR number and overrides are rejected.
-        required: false
-        default: ""
-      snapshot_bucket_name:
-        description: Deprecated. Sandbox snapshot buckets are derived from the PR number and overrides are rejected.
-        required: false
-        default: ""
       node_instance_type:
         description: Optional EKS node instance type override
         required: false
@@ -108,14 +100,13 @@ on:
         description: Optional sandbox PR head commit SHA used for env_version when dispatching from the default branch
         required: false
         default: ""
-      owner_login:
-        description: Optional sandbox owner login used for cost-allocation tags
-        required: false
-        default: ""
       sandbox_role_override_arn:
         description: Optional sandbox AWS role ARN override reserved for the workflow R&D lane
         required: false
         default: ""
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ inputs.environment == 'sandbox' && format('infrastructure-sandbox-{0}', inputs.pull_request_number || format('{0}-{1}', inputs.owner_login || 'admin', inputs.source_ref_name || github.ref_name)) || format('infrastructure-{0}', inputs.environment) }}
@@ -134,7 +125,7 @@ jobs:
       TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.environment == 'sandbox' && inputs.source_ref_name != '' && (inputs.pull_request_number == '' || inputs.action == 'apply' || inputs.sandbox_role_override_arn != '') && inputs.source_ref_name || github.event.repository.default_branch }}
 
@@ -144,6 +135,71 @@ jobs:
           echo "Manual sandbox infrastructure runs are allowed only from the default branch or a devops/* branch." >&2
           echo "Dispatch on ${{ github.event.repository.default_branch }} for rescue, or use a devops/* branch for admin verification." >&2
           exit 1
+
+      - name: Load workflow repo defaults
+        env:
+          AWS_ROLE_SANDBOX_ARN_OVERRIDE: ${{ inputs.sandbox_role_override_arn || '' }}
+          AWS_ROLE_SANDBOX_ARN_SECRET: ${{ secrets.AWS_ROLE_SANDBOX_ARN || '' }}
+          AWS_ROLE_STAGING_ARN_SECRET: ${{ secrets.AWS_ROLE_STAGING_ARN || '' }}
+          AWS_ROLE_PRODUCTION_ARN_SECRET: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || '' }}
+          REPO_VARS_JSON: ${{ toJson(vars) }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          import os
+
+          repo_vars = json.loads(os.environ.get("REPO_VARS_JSON") or "{}")
+
+          def repo(name: str, default: str = "") -> str:
+            value = repo_vars.get(name)
+            if value in (None, ""):
+              return default
+            return str(value)
+
+          def first_non_empty(*values: str, default: str = "") -> str:
+            for value in values:
+              if value not in (None, ""):
+                return str(value)
+            return default
+
+          values = {
+            "AWS_ROLE_SANDBOX_ARN": first_non_empty(
+              os.environ.get("AWS_ROLE_SANDBOX_ARN_OVERRIDE"),
+              os.environ.get("AWS_ROLE_SANDBOX_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_SANDBOX_ARN"),
+            ),
+            "AWS_ROLE_STAGING_ARN": first_non_empty(
+              os.environ.get("AWS_ROLE_STAGING_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_STAGING_ARN"),
+            ),
+            "AWS_ROLE_PRODUCTION_ARN": first_non_empty(
+              os.environ.get("AWS_ROLE_PRODUCTION_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_PRODUCTION_ARN"),
+            ),
+            "STAGING_CLUSTER_NAME": repo("STAGING_EKS_CLUSTER_NAME", "face-detector-staging"),
+            "PRODUCTION_CLUSTER_NAME": repo("PRODUCTION_EKS_CLUSTER_NAME", "face-detector-production"),
+            "SANDBOX_CLUSTER_PREFIX": repo("SANDBOX_EKS_CLUSTER_PREFIX", "face-detector-sbx"),
+            "STAGING_SNAPSHOT_BUCKET_NAME": repo("STAGING_SNAPSHOT_BUCKET_NAME", "face-detector-employee-images-staging"),
+            "PRODUCTION_SNAPSHOT_BUCKET_NAME": repo("PRODUCTION_SNAPSHOT_BUCKET_NAME", "face-detector-employee-images-production"),
+            "SANDBOX_SNAPSHOT_BUCKET_PREFIX": repo("SANDBOX_SNAPSHOT_BUCKET_PREFIX", "face-detector-sbx"),
+            "STAGING_NODE_INSTANCE_TYPE": repo("STAGING_NODE_INSTANCE_TYPE", "c7i-flex.large"),
+            "PRODUCTION_NODE_INSTANCE_TYPE": repo("PRODUCTION_NODE_INSTANCE_TYPE", "m7i-flex.large"),
+            "SANDBOX_NODE_INSTANCE_TYPE": repo("SANDBOX_NODE_INSTANCE_TYPE", "c7i-flex.large"),
+            "STAGING_NODE_MIN_SIZE": repo("STAGING_NODE_MIN_SIZE", "1"),
+            "STAGING_NODE_MAX_SIZE": repo("STAGING_NODE_MAX_SIZE", "2"),
+            "STAGING_NODE_DESIRED_SIZE": repo("STAGING_NODE_DESIRED_SIZE", "1"),
+            "PRODUCTION_NODE_MIN_SIZE": repo("PRODUCTION_NODE_MIN_SIZE", "2"),
+            "PRODUCTION_NODE_MAX_SIZE": repo("PRODUCTION_NODE_MAX_SIZE", "6"),
+            "PRODUCTION_NODE_DESIRED_SIZE": repo("PRODUCTION_NODE_DESIRED_SIZE", "2"),
+            "SANDBOX_NODE_MIN_SIZE": repo("SANDBOX_NODE_MIN_SIZE", "1"),
+            "SANDBOX_NODE_MAX_SIZE": repo("SANDBOX_NODE_MAX_SIZE", "2"),
+            "SANDBOX_NODE_DESIRED_SIZE": repo("SANDBOX_NODE_DESIRED_SIZE", "1"),
+            "SSM_KMS_KEY_ID": repo("SSM_KMS_KEY_ID"),
+          }
+
+          for key, value in values.items():
+            print(f"{key}={value}")
+          PY
 
       - name: Resolve infrastructure context
         id: context
@@ -155,37 +211,16 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_REPOSITORY_SLUG: ${{ github.repository }}
-          INPUT_CLUSTER_NAME: ${{ inputs.cluster_name }}
-          INPUT_SNAPSHOT_BUCKET_NAME: ${{ inputs.snapshot_bucket_name }}
+          INPUT_CLUSTER_NAME: ${{ inputs.cluster_name || '' }}
+          INPUT_SNAPSHOT_BUCKET_NAME: ${{ inputs.snapshot_bucket_name || '' }}
           INPUT_NODE_INSTANCE_TYPE: ${{ inputs.node_instance_type }}
           INPUT_NODE_MIN_SIZE: ${{ inputs.node_min_size }}
           INPUT_NODE_MAX_SIZE: ${{ inputs.node_max_size }}
           INPUT_NODE_DESIRED_SIZE: ${{ inputs.node_desired_size }}
-          INPUT_OWNER_LOGIN: ${{ inputs.owner_login }}
+          INPUT_OWNER_LOGIN: ${{ github.event_name == 'workflow_dispatch' && (inputs.owner_login || github.actor) || inputs.owner_login }}
           GIT_SHA: ${{ inputs.source_git_sha || github.sha }}
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           GITHUB_TOKEN: ${{ github.token }}
-          AWS_ROLE_SANDBOX_ARN: ${{ inputs.sandbox_role_override_arn || secrets.AWS_ROLE_SANDBOX_ARN || vars['AWS_ROLE_SANDBOX_ARN'] || '' }}
-          AWS_ROLE_STAGING_ARN: ${{ secrets.AWS_ROLE_STAGING_ARN || vars['AWS_ROLE_STAGING_ARN'] || '' }}
-          AWS_ROLE_PRODUCTION_ARN: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || vars['AWS_ROLE_PRODUCTION_ARN'] || '' }}
-          STAGING_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || 'face-detector-staging' }}
-          PRODUCTION_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || 'face-detector-production' }}
-          SANDBOX_CLUSTER_PREFIX: ${{ vars['SANDBOX_EKS_CLUSTER_PREFIX'] || 'face-detector-sbx' }}
-          STAGING_SNAPSHOT_BUCKET_NAME: ${{ vars.STAGING_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-staging' }}
-          PRODUCTION_SNAPSHOT_BUCKET_NAME: ${{ vars.PRODUCTION_SNAPSHOT_BUCKET_NAME || 'face-detector-employee-images-production' }}
-          SANDBOX_SNAPSHOT_BUCKET_PREFIX: ${{ vars['SANDBOX_SNAPSHOT_BUCKET_PREFIX'] || 'face-detector-sbx' }}
-          STAGING_NODE_INSTANCE_TYPE: ${{ vars.STAGING_NODE_INSTANCE_TYPE || 'c7i-flex.large' }}
-          PRODUCTION_NODE_INSTANCE_TYPE: ${{ vars.PRODUCTION_NODE_INSTANCE_TYPE || 'm7i-flex.large' }}
-          SANDBOX_NODE_INSTANCE_TYPE: ${{ vars['SANDBOX_NODE_INSTANCE_TYPE'] || 'c7i-flex.large' }}
-          STAGING_NODE_MIN_SIZE: ${{ vars.STAGING_NODE_MIN_SIZE || '1' }}
-          STAGING_NODE_MAX_SIZE: ${{ vars.STAGING_NODE_MAX_SIZE || '2' }}
-          STAGING_NODE_DESIRED_SIZE: ${{ vars.STAGING_NODE_DESIRED_SIZE || '1' }}
-          PRODUCTION_NODE_MIN_SIZE: ${{ vars.PRODUCTION_NODE_MIN_SIZE || '2' }}
-          PRODUCTION_NODE_MAX_SIZE: ${{ vars.PRODUCTION_NODE_MAX_SIZE || '6' }}
-          PRODUCTION_NODE_DESIRED_SIZE: ${{ vars.PRODUCTION_NODE_DESIRED_SIZE || '2' }}
-          SANDBOX_NODE_MIN_SIZE: ${{ vars['SANDBOX_NODE_MIN_SIZE'] || '1' }}
-          SANDBOX_NODE_MAX_SIZE: ${{ vars['SANDBOX_NODE_MAX_SIZE'] || '2' }}
-          SANDBOX_NODE_DESIRED_SIZE: ${{ vars['SANDBOX_NODE_DESIRED_SIZE'] || '1' }}
         run: |
           python3 scripts/resolve_workflow_context.py \
             --mode infrastructure \
@@ -229,7 +264,7 @@ jobs:
             --role-production-arn "$AWS_ROLE_PRODUCTION_ARN"
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ steps.context.outputs.aws_role_arn }}
           role-session-name: gha-infrastructure-${{ github.run_id }}
@@ -320,7 +355,7 @@ jobs:
           PY
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: "1.6.6"
 
@@ -432,7 +467,7 @@ jobs:
 
       - name: Mark sandbox as active
         if: success() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
         with:
@@ -483,7 +518,7 @@ jobs:
 
       - name: Publish sandbox apply PR comment
         if: success() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           COMMENT_FILE: ${{ runner.temp }}/sandbox-status-comment.md
           PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
@@ -699,8 +734,8 @@ jobs:
           TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
           TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
           TF_VAR_env_file_path: ${{ steps.runtime-env.outputs.env_file_path }}
-          TF_VAR_kms_key_id: ${{ vars['SSM_KMS_KEY_ID'] || '' }}
         run: |
+          export TF_VAR_kms_key_id="${SSM_KMS_KEY_ID:-}"
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
@@ -916,7 +951,7 @@ jobs:
 
       - name: Mark sandbox as inactive
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
         with:
@@ -957,7 +992,7 @@ jobs:
 
       - name: Publish sandbox destroy PR comment
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           COMMENT_FILE: ${{ runner.temp }}/sandbox-status-comment.md
           PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}

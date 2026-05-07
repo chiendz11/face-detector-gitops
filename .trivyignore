@@ -1,0 +1,8 @@
+# Accepted application dependency debt already tracked in PR CI until the
+# underlying package upgrades are planned and validated.
+CVE-2026-24486
+CVE-2026-40347
+PYSEC-2023-184
+GHSA-jh2j-j4j9-crg3
+CVE-2026-30922
+CVE-2025-62727
