@@ -426,7 +426,7 @@ In the current cloud-aligned design, the vector store is `pgvector` inside Postg
 If your goal is to maximize score with practical effort, prioritize:
 
 1. `CI/CD` for VPS deployment
-2. `Backup` for Postgres, Qdrant, and MinIO
+2. `Backup` for Postgres (including pgvector data) and MinIO
 3. `Monitoring` with Prometheus and Grafana or at least health alerts
 4. `Model/config versioning` with model name, version, and threshold in config
 5. `SSL/domain` via nginx and Let's Encrypt or Cloudflare
@@ -539,7 +539,7 @@ architecture, but the core business features still need implementation:
 ## Suggested Next Steps
 
 1. Implement Postgres models for employees, users, roles, and recognition logs.
-2. Replace stub recognition services with DeepFace and Qdrant integration.
+2. Replace stub recognition services with production DeepFace + pgvector integration.
 3. Add authentication and role-based admin APIs.
 4. Expand the edge kiosk UI beyond console status output.
 5. Add backup scripts, monitoring compose, and stronger CI/CD verification.
