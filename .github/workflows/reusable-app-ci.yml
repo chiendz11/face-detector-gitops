@@ -103,7 +103,7 @@ jobs:
 
       - name: Upload pip-audit findings
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pip-audit-findings
           path: .artifacts/pip-audit/
@@ -155,7 +155,7 @@ jobs:
 
       - name: Upload dependency license report
         if: ${{ always() && hashFiles('.artifacts/licenses/*.json') != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dependency-license-report
           path: .artifacts/licenses
@@ -189,7 +189,7 @@ jobs:
         run: pytest -m "not e2e and not integration" --tb=short -q --cov=app --cov-report=xml:coverage-unit.xml --cov-report=term-missing
 
       - name: Upload unit test coverage
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-unit
           path: backend/coverage-unit.xml
@@ -223,7 +223,7 @@ jobs:
         run: pytest -m integration --tb=short -q --cov=app --cov-report=xml:coverage-integration.xml --cov-report=term-missing
 
       - name: Upload integration test coverage
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-integration
           path: backend/coverage-integration.xml
@@ -379,7 +379,7 @@ jobs:
 
       - name: Upload Trivy reports
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trivy-reports
           path: .artifacts/trivy
@@ -388,7 +388,7 @@ jobs:
 
       - name: Upload SBOM reports
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-reports
           path: .artifacts/sbom
@@ -405,7 +405,7 @@ jobs:
 
       - name: Upload built image archives
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docker-image-archives
           path: .artifacts/images
