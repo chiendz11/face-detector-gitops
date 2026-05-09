@@ -37,8 +37,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install pip-audit and SARIF converter
-        run: pip install pip-audit==2.9.0 pip-audit-sarif==0.1.0
+      - name: Install pip-audit
+        run: pip install pip-audit==2.9.0
 
       - name: Build ignore args from policy file
         id: audit-ignore
