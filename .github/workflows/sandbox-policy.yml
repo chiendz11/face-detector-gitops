@@ -1,4 +1,4 @@
-name: Sandbox Policy
+﻿name: Sandbox Policy
 
 on:
   pull_request:
@@ -12,11 +12,6 @@ on:
       - labeled
       - unlabeled
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: read
-
 concurrency:
   group: sandbox-policy-${{ github.ref }}
   cancel-in-progress: true
@@ -25,6 +20,10 @@ jobs:
   evaluate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
       - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
