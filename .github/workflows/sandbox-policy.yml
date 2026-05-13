@@ -14,15 +14,16 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: read
-
 concurrency:
   group: sandbox-policy-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   evaluate:
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
