@@ -34,6 +34,7 @@ jobs:
       actions: read
       contents: read
       pull-requests: read
+      issues: read
     outputs:
       should_apply: ${{ steps.gate.outputs.should_apply }}
       owner_login: ${{ steps.gate.outputs.owner_login }}
@@ -41,11 +42,110 @@ jobs:
       source_ref_name: ${{ steps.gate.outputs.source_ref_name }}
       source_git_sha: ${{ steps.gate.outputs.source_git_sha }}
     steps:
-      - name: Evaluate sandbox deployment policy
-        id: gate
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve changed files
+        id: resolve_files
+        uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            async function resolvePullRequest() {
+              if (context.eventName === 'pull_request_target') {
+                return context.payload.pull_request;
+              }
+              const workflowRun = context.payload.workflow_run;
+              if (!workflowRun) return null;
+              const linkedPulls = workflowRun.pull_requests || [];
+              const candidate = linkedPulls.find((p) => p.base?.ref === (context.payload.repository?.default_branch || 'master')) || linkedPulls[0];
+              if (!candidate) return null;
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: candidate.number,
+              });
+              if (pr.head.sha !== workflowRun.head_sha) { core.info('stale workflow-run'); return null; }
+              return pr;
+            }
+
+            const pr = await resolvePullRequest();
+            if (!pr) { core.info('no PR to resolve changed files for'); return; }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const paths = files.map(f => f.filename);
+            fs.writeFileSync('.sandbox-policy-files', paths.join('\n'));
+
+      - name: Get PR approvals
+        id: approvals
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const approversArray = Array.from(new Set(reviews.filter(r => r.state === 'APPROVED').map(r => r.user.login)));
+            const fs = require('fs');
+            fs.writeFileSync('.sandbox-policy-approvers', JSON.stringify(approversArray));
+            fs.writeFileSync('.sandbox-policy-approvals', String(approversArray.length));
+            core.setOutput('approval_count', approversArray.length);
+
+      - name: Evaluate sandbox policy
+        run: |
+          mkdir -p .artifacts/sandbox-policy
+          python scripts/evaluate_sandbox_requirement.py \
+            --event-path "$GITHUB_EVENT_PATH" \
+            --changed-files-path .sandbox-policy-files \
+            --approvers-path .sandbox-policy-approvers \
+            --codeowners-path .github/CODEOWNERS \
+            --approvals-path .sandbox-policy-approvals \
+            --report-path .artifacts/sandbox-policy/report.json
+
+      - name: Decide apply
+        id: gate
+        uses: actions/github-script@v7
+        env:
+          REPORT_FILE: .artifacts/sandbox-policy/report.json
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync(process.env.REPORT_FILE)) {
+              core.info('no report file; skipping apply');
+              core.setOutput('should_apply', 'false');
+              core.setOutput('owner_login', '');
+              core.setOutput('pr_number', '');
+              core.setOutput('source_ref_name', '');
+              core.setOutput('source_git_sha', '');
+              return;
+            }
+            const report = JSON.parse(fs.readFileSync(process.env.REPORT_FILE, 'utf8'));
+            // runtime error in evaluator -> do not apply
+            if (report.decision === 'error') { core.info('evaluator runtime error; skip apply'); core.setOutput('should_apply', 'false'); return; }
+            // governance block: absolute no-deploy
+            if (report.block) { core.info(`governance block present: ${JSON.stringify(report.blockingReasons || [])}`); core.setOutput('should_apply', 'false'); return; }
+            // maintain existing semantic: require explicit pass
+            if (report.decision !== 'pass') { core.info('report not pass'); core.setOutput('should_apply', 'false'); return; }
+
             const workflowPolicies = [
               { file: 'repo-security.yml', label: 'Repo Security', event: 'pull_request', always: true },
               { file: 'app-ci.yml', label: 'App CI', event: 'pull_request', always: false },
@@ -54,37 +154,6 @@ jobs:
               { file: 'terraform-plan.yml', label: 'Terraform PR Plan', event: 'pull_request_target', always: false },
             ];
             const successConclusions = new Set(['success', 'neutral', 'skipped']);
-
-            async function resolvePullRequest() {
-              if (context.eventName === 'pull_request_target') {
-                return context.payload.pull_request;
-              }
-
-              const workflowRun = context.payload.workflow_run;
-              if (!workflowRun) {
-                return null;
-              }
-
-              const linkedPulls = workflowRun.pull_requests || [];
-              const candidate = linkedPulls.find((pull) => pull.base?.ref === (context.payload.repository?.default_branch || 'master')) || linkedPulls[0];
-              if (!candidate) {
-                core.info('Skipping sandbox auto-apply because the triggering workflow run is not associated with an open pull request.');
-                return null;
-              }
-
-              const { data: pr } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: candidate.number,
-              });
-
-              if (pr.head.sha !== workflowRun.head_sha) {
-                core.info(`Skipping sandbox auto-apply because workflow run SHA ${workflowRun.head_sha} is stale; current PR head is ${pr.head.sha}.`);
-                return null;
-              }
-
-              return pr;
-            }
 
             async function getLatestRun(workflow, headSha) {
               const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
@@ -95,79 +164,63 @@ jobs:
                 head_sha: headSha,
                 per_page: 100,
               });
-
-              const candidates = runs
-                .filter((run) => run.head_sha === headSha)
-                .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
-
+              const candidates = runs.filter((run) => run.head_sha === headSha).sort((l, r) => Date.parse(r.created_at) - Date.parse(l.created_at));
               return candidates[0] || null;
             }
 
             async function evaluateWorkflowGates(headSha) {
               const pending = [];
               const failing = [];
-
               for (const workflow of workflowPolicies) {
                 const latest = await getLatestRun(workflow, headSha);
-
                 if (!latest) {
-                  if (workflow.always) {
-                    pending.push(`${workflow.label}: waiting for first run`);
-                  }
+                  if (workflow.always) pending.push(`${workflow.label}: waiting for first run`);
                   continue;
                 }
-
-                if (latest.status !== 'completed') {
-                  pending.push(`${workflow.label}: ${latest.status}`);
-                  continue;
-                }
-
-                if (!successConclusions.has(latest.conclusion || '')) {
-                  failing.push(`${workflow.label}: ${latest.conclusion || 'unknown'}`);
-                }
+                if (latest.status !== 'completed') { pending.push(`${workflow.label}: ${latest.status}`); continue; }
+                if (!successConclusions.has(latest.conclusion || '')) failing.push(`${workflow.label}: ${latest.conclusion || 'unknown'}`);
               }
-
               return { pending, failing };
             }
 
-            const allowedLabels = ['deploy-sandbox', 'deploy-preview'];
-            const pr = await resolvePullRequest();
-            if (!pr) {
-              core.setOutput('should_apply', 'false');
-              core.setOutput('owner_login', '');
-              core.setOutput('pr_number', '');
-              core.setOutput('source_ref_name', '');
-              core.setOutput('source_git_sha', '');
-              return;
+            async function resolvePullRequest() {
+              if (context.eventName === 'pull_request_target') return context.payload.pull_request;
+              const workflowRun = context.payload.workflow_run;
+              if (!workflowRun) return null;
+              const linkedPulls = workflowRun.pull_requests || [];
+              const candidate = linkedPulls.find((p) => p.base?.ref === (context.payload.repository?.default_branch || 'master')) || linkedPulls[0];
+              if (!candidate) return null;
+              const { data: pr } = await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: candidate.number });
+              if (pr.head.sha !== workflowRun.head_sha) { core.info('stale workflow-run'); return null; }
+              return pr;
             }
 
-            const labels = pr.labels.map((label) => label.name);
-            const hasDeployLabel = allowedLabels.some((label) => labels.includes(label));
-            const sameRepo = pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
-            const isDevopsBranch = pr.head.ref.startsWith('devops/');
-            const { pending, failing } = await evaluateWorkflowGates(pr.head.sha);
-            const checksReady = pending.length === 0 && failing.length === 0;
-            const shouldApply = sameRepo && !isDevopsBranch && !pr.draft && hasDeployLabel && checksReady;
+            const pr = await resolvePullRequest();
+            if (!pr) { core.setOutput('should_apply', 'false'); return; }
 
-            core.setOutput('should_apply', shouldApply ? 'true' : 'false');
+            const labels = pr.labels.map(l => l.name);
+            const deployLabels = ['deploy-sandbox', 'deploy-preview'];
+            const deployLabel = deployLabels.find(label => labels.includes(label));
+            if (!deployLabel) { core.info('no sandbox deploy label'); core.setOutput('should_apply', 'false'); return; }
+
+            // verify label actor was a human
+            const events = await github.paginate(github.rest.issues.listEvents, { owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, per_page: 100 });
+            const labelEvents = events.filter(e => e.event === 'labeled' && e.label && e.label.name === deployLabel);
+            if (labelEvents.length === 0) { core.info('no label events'); core.setOutput('should_apply', 'false'); return; }
+            const last = labelEvents.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)).pop();
+            const actor = (last.actor && last.actor.login) || '';
+            const botUsers = new Set(['github-actions[bot]', 'dependabot[bot]']);
+            if (botUsers.has(actor)) { core.info('label added by bot; skip auto-apply'); core.setOutput('should_apply', 'false'); return; }
+            if (actor !== context.repo.owner) { core.info('label not added by repository owner; skip auto-apply'); core.setOutput('should_apply', 'false'); return; }
+
+            const { pending, failing } = await evaluateWorkflowGates(pr.head.sha);
+            if (pending.length > 0 || failing.length > 0) { core.info('CI gates not ready'); core.setOutput('should_apply', 'false'); return; }
+
+            core.setOutput('should_apply', 'true');
             core.setOutput('owner_login', pr.user.login);
             core.setOutput('pr_number', String(pr.number));
             core.setOutput('source_ref_name', pr.head.ref);
             core.setOutput('source_git_sha', pr.head.sha);
-
-            if (!sameRepo) {
-              core.info('Skipping sandbox auto-apply for forked pull requests.');
-            } else if (isDevopsBranch) {
-              core.info('Skipping developer sandbox flow for devops/* branches.');
-            } else if (pr.draft) {
-              core.info('Skipping sandbox auto-apply because the PR is still a draft.');
-            } else if (!hasDeployLabel) {
-              core.info('Skipping sandbox auto-apply because no deploy label is present.');
-            } else if (pending.length > 0) {
-              core.info(`Skipping sandbox auto-apply until required PR gates finish: ${pending.join('; ')}`);
-            } else if (failing.length > 0) {
-              core.info(`Skipping sandbox auto-apply because required PR gates are failing: ${failing.join('; ')}`);
-            }
 
   enforce-quota:
     needs: evaluate-policy

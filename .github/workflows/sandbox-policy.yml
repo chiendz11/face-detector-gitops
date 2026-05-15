@@ -11,6 +11,10 @@ on:
       - ready_for_review
       - labeled
       - unlabeled
+  pull_request_review:
+    types:
+      - submitted
+      - edited
 
 permissions:
   contents: read
@@ -24,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
       issues: write
       pull-requests: write
@@ -45,13 +50,113 @@ jobs:
           mapfile -t changed_files < <(git diff --name-only "origin/${{ github.event.pull_request.base.ref }}"...HEAD)
           printf '%s\n' "${changed_files[@]}" > .sandbox-policy-files
 
+      - name: Get PR approvals
+        id: approvals
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            // Unique users with APPROVED
+            const approversArray = Array.from(new Set(reviews.filter(r => r.state === 'APPROVED').map(r => r.user.login)));
+            const fs = require('fs');
+            // write JSON array of approvers for owner-matching
+            fs.writeFileSync('.sandbox-policy-approvers', JSON.stringify(approversArray));
+            // keep numeric compatibility
+            fs.writeFileSync('.sandbox-policy-approvals', String(approversArray.length));
+            core.setOutput('approval_count', approversArray.length);
+
+      - name: Resolve trusted governance labels
+        id: trusted_labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const pr = context.payload.pull_request || {};
+            const presentLabels = new Set((pr.labels || []).map(l => l.name));
+            const repoOwner = context.repo.owner;
+            const botUsers = new Set(['github-actions[bot]', 'dependabot[bot]']);
+            const trackedLabels = ['allow-self-approve', 'deploy-sandbox', 'deploy-preview'];
+
+            const events = await github.paginate(github.rest.issues.listEvents, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const trust = {};
+            for (const label of trackedLabels) {
+              const labelEvents = events.filter((event) =>
+                event.event === 'labeled' && event.label && event.label.name === label
+              );
+              const latest = labelEvents
+                .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at))
+                .pop();
+              const actor = (latest && latest.actor && latest.actor.login) || '';
+              const trusted = presentLabels.has(label) && actor === repoOwner && !botUsers.has(actor);
+              trust[label] = {
+                present: presentLabels.has(label),
+                actor,
+                trusted,
+                labeledAt: latest ? latest.created_at : null,
+              };
+            }
+
+            fs.writeFileSync('.sandbox-policy-label-trust.json', JSON.stringify(trust, null, 2));
+            core.setOutput('allow_self_approve', trust['allow-self-approve'].trusted ? 'true' : 'false');
+            core.setOutput('deploy_label', ['deploy-sandbox', 'deploy-preview'].find((label) => trust[label].trusted) || '');
+
       - name: Evaluate sandbox blast radius policy
+        env:
+          ALLOW_SELF_APPROVE: ${{ steps.trusted_labels.outputs.allow_self_approve }}
         run: |
           mkdir -p .artifacts/sandbox-policy
+          EXTRA=""
+          if [ "${ALLOW_SELF_APPROVE}" = "true" ]; then
+            EXTRA="--allow-self-approve"
+          fi
           python scripts/evaluate_sandbox_requirement.py \
             --event-path "$GITHUB_EVENT_PATH" \
             --changed-files-path .sandbox-policy-files \
+            --approvers-path .sandbox-policy-approvers \
+            --codeowners-path .github/CODEOWNERS \
+            --label-trust-path .sandbox-policy-label-trust.json \
+            --approvals-path .sandbox-policy-approvals \
+            $EXTRA \
             --report-path .artifacts/sandbox-policy/report.json
+
+      - name: Fail if governance block
+        if: ${{ always() && hashFiles('.artifacts/sandbox-policy/report.json') != '' }}
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          report_file = Path('.artifacts/sandbox-policy/report.json')
+          if not report_file.exists():
+              print('No report found; skipping governance block check')
+              sys.exit(0)
+          report = json.loads(report_file.read_text(encoding='utf-8'))
+          # runtime error in evaluator should surface as error
+          if report.get('decision') == 'error':
+              print('Evaluator runtime error: see report', file=sys.stderr)
+              sys.exit(2)
+          if report.get('block'):
+              reasons = report.get('blockingReasons', [])
+              print('Sandbox policy governance block: ' + ','.join(reasons), file=sys.stderr)
+              sys.exit(1)
+          print('No governance block')
+          PY
 
       - name: Write sandbox policy summary
         if: ${{ always() && hashFiles('.artifacts/sandbox-policy/report.json') != '' }}
@@ -68,6 +173,11 @@ jobs:
               f"- Lane: `{report['classification']}`",
               f"- Branch: `{report['branch']}`",
               f"- Deploy label present: `{report['hasDeployLabel']}`",
+              f"- Governance mode: `{report.get('governanceMode', 'unknown')}`",
+              f"- Trusted deploy label: `{report.get('deployLabel') or 'none'}`",
+              f"- Deploy label actor: `{report.get('deployLabelActor') or 'none'}`",
+              f"- Self-approve label trusted: `{report.get('selfApproveLabelTrusted', False)}`",
+              f"- Self-approve label actor: `{report.get('selfApproveLabelActor') or 'none'}`",
               '',
               report['summary'],
           ]
@@ -82,6 +192,96 @@ jobs:
           Path('.artifacts/sandbox-policy/summary.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
           PY
           cat .artifacts/sandbox-policy/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sandbox-policy report
+        if: ${{ always() && hashFiles('.artifacts/sandbox-policy/report.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-policy-report
+          path: .artifacts/sandbox-policy/
+
+      - name: Mark ready-for-deploy (bot)
+        if: ${{ hashFiles('.artifacts/sandbox-policy/report.json') != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/github-script@v7
+        env:
+          REPORT_FILE: .artifacts/sandbox-policy/report.json
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync(process.env.REPORT_FILE, 'utf8'));
+            if (report.decision !== 'pass') {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: 'ready-for-deploy',
+                });
+              } catch (e) {}
+              core.info('Not marking ready-for-deploy: report decision !== pass');
+              return;
+            }
+
+            const workflowPolicies = [
+              { file: 'repo-security.yml', label: 'Repo Security', event: 'pull_request', always: true },
+              { file: 'app-ci.yml', label: 'App CI', event: 'pull_request', always: false },
+              { file: 'infra-ci.yml', label: 'Infra CI', event: 'pull_request', always: false },
+              { file: 'platform-ci.yml', label: 'Platform CI', event: 'pull_request', always: false },
+              { file: 'terraform-plan.yml', label: 'Terraform PR Plan', event: 'pull_request_target', always: false },
+            ];
+            const successConclusions = new Set(['success', 'neutral', 'skipped']);
+
+            async function getLatestRun(workflow, headSha) {
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: workflow.file,
+                event: workflow.event,
+                head_sha: headSha,
+                per_page: 100,
+              });
+              const candidates = runs
+                .filter((run) => run.head_sha === headSha)
+                .sort((l, r) => Date.parse(r.created_at) - Date.parse(l.created_at));
+              return candidates[0] || null;
+            }
+
+            async function evaluateWorkflowGates(headSha) {
+              const pending = [];
+              const failing = [];
+              for (const workflow of workflowPolicies) {
+                const latest = await getLatestRun(workflow, headSha);
+                if (!latest) {
+                  if (workflow.always) pending.push(`${workflow.label}: waiting for first run`);
+                  continue;
+                }
+                if (latest.status !== 'completed') { pending.push(`${workflow.label}: ${latest.status}`); continue; }
+                if (!successConclusions.has(latest.conclusion || '')) failing.push(`${workflow.label}: ${latest.conclusion || 'unknown'}`);
+              }
+              return { pending, failing };
+            }
+
+            const pr = context.payload.pull_request;
+            if (!pr) { core.info('No PR in payload; skipping ready-for-deploy'); return; }
+
+            const { pending, failing } = await evaluateWorkflowGates(pr.head.sha);
+            if (pending.length > 0 || failing.length > 0) {
+              core.info(`CI gates not ready: ${pending.concat(failing).join('; ')}`);
+              return;
+            }
+
+            const labels = pr.labels.map(l => l.name);
+            if (!labels.includes('ready-for-deploy')) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: ['ready-for-deploy'],
+              });
+              core.info('Added ready-for-deploy label');
+            } else {
+              core.info('ready-for-deploy already present');
+            }
 
       - name: Upsert sandbox policy PR comment
         if: ${{ always() && hashFiles('.artifacts/sandbox-policy/report.json') != '' && github.event.pull_request.head.repo.full_name == github.repository }}
@@ -129,9 +329,10 @@ jobs:
               marker,
               '## Sandbox Policy',
               '',
-              'This PR is currently classified as a heavy-lane change and is missing a sandbox deploy label.',
+              'This PR is currently classified as a heavy-lane change and is missing a trusted governance label or approval.',
               '',
-              '- Add `deploy-sandbox` or `deploy-preview` if this PR should go through the standard sandbox auto-apply flow.',
+              '- Have the repository owner add `deploy-sandbox` or `deploy-preview` if this PR should go through the sandbox auto-apply flow.',
+              '- Have the repository owner add `allow-self-approve` only for non-critical heavy changes that do not need a sandbox deploy.',
               '- If this should stay in the fast lane, reduce the blast radius or split the change so the heavy-path files are isolated.',
               '',
               '### Why this PR is considered heavy',
