@@ -22,6 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       app_changed: ${{ steps.classify.outputs.app_changed }}
+      backend_changed: ${{ steps.classify.outputs.backend_changed }}
+      frontend_admin_changed: ${{ steps.classify.outputs.frontend_admin_changed }}
+      edge_client_changed: ${{ steps.classify.outputs.edge_client_changed }}
+      nginx_changed: ${{ steps.classify.outputs.nginx_changed }}
+      app_shared_changed: ${{ steps.classify.outputs.app_shared_changed }}
+      image_names: ${{ steps.classify.outputs.image_names }}
       platform_changed: ${{ steps.classify.outputs.platform_changed }}
       infra_changed: ${{ steps.classify.outputs.infra_changed }}
     steps:
@@ -38,36 +44,9 @@ jobs:
           head_sha="${{ github.event.pull_request.head.sha }}"
 
           git diff --name-only "$base_sha" "$head_sha" > .changed-files
-
-          app_changed=false
-          platform_changed=false
-          infra_changed=false
-
-          while IFS= read -r path; do
-            case "$path" in
-              backend/*|frontend-admin/*|edge-client/*|nginx/*|docker-compose.yml|docker-compose.ci.yml|.env.example|.trivyignore|scripts/ci-e2e-test.sh|scripts/resolve_registry_digest.py|.github/image-catalog.json|.github/actions/build-images/*|.github/actions/load-images/*|.github/actions/save-images/*|.github/actions/trivy-scan-images/*|.github/actions/sbom-images/*|.github/workflows/app-ci.yml|.github/workflows/reusable-app-ci.yml)
-                app_changed=true
-                ;;
-            esac
-
-            case "$path" in
-              .github/workflows/*|.github/actions/*|.github/CODEOWNERS|.github/dependabot.yml|policies/*|scripts/resolve_workflow_context.py|scripts/resolve_registry_digest.py|scripts/update_gitops_image_locks.py|scripts/evaluate_sandbox_requirement.py|scripts/cleanup_sandbox_aws_orphans.py|scripts/render_sandbox_status_comment.py|scripts/generate-env-from-ssm.sh|scripts/ci-e2e-test.sh|scripts/ci-integration-test.sh|scripts/tests/*)
-                platform_changed=true
-                ;;
-            esac
-
-            case "$path" in
-              terraform/*|deploy/*|policies/kubernetes/*|policies/terraform/*|policies/data/*|scripts/resolve_workflow_context.py|.github/actions/setup-conftest/*|.github/workflows/infra-*.yml|.github/workflows/reusable-infra-*.yml)
-                infra_changed=true
-                ;;
-            esac
-          done < .changed-files
-
-          {
-            echo "app_changed=${app_changed}"
-            echo "platform_changed=${platform_changed}"
-            echo "infra_changed=${infra_changed}"
-          } >> "$GITHUB_OUTPUT"
+          python scripts/classify_ci_changes.py \
+            --changed-files .changed-files \
+            --github-output "$GITHUB_OUTPUT"
 
   verify-app:
     needs: detect-changes
@@ -76,6 +55,14 @@ jobs:
     with:
       registry_org: ${{ github.repository_owner }}
       image_tag: ${{ github.sha }}
+      run_backend: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.backend_changed == 'true' }}
+      run_frontend_admin: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.frontend_admin_changed == 'true' }}
+      run_edge_client: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.edge_client_changed == 'true' }}
+      run_nginx: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.nginx_changed == 'true' }}
+      run_app_security: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.backend_changed == 'true' || needs.detect-changes.outputs.frontend_admin_changed == 'true' || needs.detect-changes.outputs.edge_client_changed == 'true' }}
+      run_docker_images: ${{ needs.detect-changes.outputs.image_names != '' }}
+      run_smoke_e2e: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' }}
+      image_names: ${{ needs.detect-changes.outputs.image_names }}
     secrets: inherit
 
   verify-platform:
@@ -101,12 +88,24 @@ jobs:
         shell: bash
         run: |
           app_changed="${{ needs.detect-changes.outputs.app_changed }}"
+          backend_changed="${{ needs.detect-changes.outputs.backend_changed }}"
+          frontend_admin_changed="${{ needs.detect-changes.outputs.frontend_admin_changed }}"
+          edge_client_changed="${{ needs.detect-changes.outputs.edge_client_changed }}"
+          nginx_changed="${{ needs.detect-changes.outputs.nginx_changed }}"
+          app_shared_changed="${{ needs.detect-changes.outputs.app_shared_changed }}"
+          image_names="${{ needs.detect-changes.outputs.image_names }}"
           platform_changed="${{ needs.detect-changes.outputs.platform_changed }}"
           infra_changed="${{ needs.detect-changes.outputs.infra_changed }}"
 
+          detect_result="${{ needs.detect-changes.result }}"
           app_result="${{ needs.verify-app.result }}"
           platform_result="${{ needs.verify-platform.result }}"
           infra_result="${{ needs.verify-infra.result }}"
+
+          if [ "$detect_result" != "success" ]; then
+            echo "Change detection failed with result: $detect_result"
+            exit 1
+          fi
 
           if [ "$app_changed" = "true" ] && [ "$app_result" != "success" ]; then
             echo "App lane failed with result: $app_result"
@@ -123,4 +122,5 @@ jobs:
             exit 1
           fi
 
-          echo "CI Gateway passed. app_changed=$app_changed, platform_changed=$platform_changed"
+          echo "CI Gateway passed. app_changed=$app_changed, platform_changed=$platform_changed, infra_changed=$infra_changed"
+          echo "App lanes: backend=$backend_changed frontend_admin=$frontend_admin_changed edge_client=$edge_client_changed nginx=$nginx_changed shared=$app_shared_changed images=$image_names"

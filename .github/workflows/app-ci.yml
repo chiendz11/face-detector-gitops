@@ -11,8 +11,11 @@ on:
       - "nginx/**"
       - "docker-compose.yml"
       - "docker-compose.ci.yml"
+      - "docker-compose.dev.yml"
+      - "docker-compose.edge.yml"
       - ".trivyignore"
       - ".env.example"
+      - "scripts/classify_ci_changes.py"
       - "scripts/ci-e2e-test.sh"
       - "scripts/resolve_registry_digest.py"
       - ".github/image-catalog.json"
@@ -35,9 +38,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      app_changed: ${{ steps.classify.outputs.app_changed }}
+      backend_changed: ${{ steps.classify.outputs.backend_changed }}
+      frontend_admin_changed: ${{ steps.classify.outputs.frontend_admin_changed }}
+      edge_client_changed: ${{ steps.classify.outputs.edge_client_changed }}
+      nginx_changed: ${{ steps.classify.outputs.nginx_changed }}
+      app_shared_changed: ${{ steps.classify.outputs.app_shared_changed }}
+      image_names: ${{ steps.classify.outputs.image_names }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify app change lanes
+        id: classify
+        shell: bash
+        run: |
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
+
+          git diff --name-only "$base_sha" "$head_sha" > .changed-files
+          python scripts/classify_ci_changes.py \
+            --changed-files .changed-files \
+            --github-output "$GITHUB_OUTPUT"
+
   verify:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.app_changed == 'true'
     uses: ./.github/workflows/reusable-app-ci.yml
     with:
       registry_org: ${{ github.repository_owner }}
       image_tag: ${{ github.sha }}
+      run_backend: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.backend_changed == 'true' }}
+      run_frontend_admin: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.frontend_admin_changed == 'true' }}
+      run_edge_client: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.edge_client_changed == 'true' }}
+      run_nginx: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.nginx_changed == 'true' }}
+      run_app_security: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' || needs.detect-changes.outputs.backend_changed == 'true' || needs.detect-changes.outputs.frontend_admin_changed == 'true' || needs.detect-changes.outputs.edge_client_changed == 'true' }}
+      run_docker_images: ${{ needs.detect-changes.outputs.image_names != '' }}
+      run_smoke_e2e: ${{ needs.detect-changes.outputs.app_shared_changed == 'true' }}
+      image_names: ${{ needs.detect-changes.outputs.image_names }}
     secrets: inherit

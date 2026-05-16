@@ -17,12 +17,45 @@ on:
         required: false
         type: string
         default: .github/image-catalog.json
+      run_backend:
+        required: false
+        type: boolean
+        default: true
+      run_frontend_admin:
+        required: false
+        type: boolean
+        default: true
+      run_edge_client:
+        required: false
+        type: boolean
+        default: true
+      run_nginx:
+        required: false
+        type: boolean
+        default: true
+      run_app_security:
+        required: false
+        type: boolean
+        default: true
+      run_docker_images:
+        required: false
+        type: boolean
+        default: true
+      run_smoke_e2e:
+        required: false
+        type: boolean
+        default: true
+      image_names:
+        required: false
+        type: string
+        default: backend,frontend-admin,edge-client,nginx
 
 permissions:
   contents: read
 
 jobs:
   backend-lint:
+    if: ${{ inputs.run_backend }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -48,9 +81,9 @@ jobs:
         run: ruff check app tests
 
   app-security-scan:
+    if: ${{ inputs.run_app_security }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: backend-lint
     permissions:
       contents: read
       pull-requests: read
@@ -67,23 +100,28 @@ jobs:
           python-version: "3.11"
 
       - name: Install Bandit and pip-audit
+        if: ${{ inputs.run_backend || inputs.run_edge_client }}
         run: pip install bandit==1.8.5 pip-audit==2.9.0
 
       - name: Run Python SAST scan
+        if: ${{ inputs.run_backend }}
         run: bandit -r backend/app -q
 
       - name: Validate pip-audit exception expiry dates
+        if: ${{ inputs.run_backend || inputs.run_edge_client }}
         # Hard fail — expired exceptions must be reviewed before CI passes.
         # This prevents teams from forgetting to clean up stale ignores.
         run: python scripts/check_pip_audit_exceptions.py policies/pip-audit-ignore.txt
 
       - name: Build pip-audit ignore args from policy file
+        if: ${{ inputs.run_backend || inputs.run_edge_client }}
         id: audit-ignore
         run: |
           IGNORE_ARGS=$(grep -v '^#' policies/pip-audit-ignore.txt | grep -v '^[[:space:]]*$' | awk '{print "--ignore-vuln", $1}' | tr '\n' ' ')
           echo "args=${IGNORE_ARGS}" >> "$GITHUB_OUTPUT"
 
       - name: Run backend dependency audit
+        if: ${{ inputs.run_backend }}
         # continue-on-error: new CVEs do not block PR merges.
         # Findings are saved as artifacts and reported nightly via
         # security-scan.yml → GitHub Security tab (SARIF).
@@ -95,14 +133,16 @@ jobs:
             --format=json --output=.artifacts/pip-audit/backend.json
 
       - name: Run edge-client dependency audit
+        if: ${{ inputs.run_edge_client }}
         continue-on-error: true
         run: |
+          mkdir -p .artifacts/pip-audit
           pip-audit -r edge-client/requirements.txt --progress=off \
             ${{ steps.audit-ignore.outputs.args }} \
             --format=json --output=.artifacts/pip-audit/edge-client.json
 
       - name: Upload pip-audit findings
-        if: always()
+        if: ${{ always() && (inputs.run_backend || inputs.run_edge_client) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pip-audit-findings
@@ -111,21 +151,25 @@ jobs:
           retention-days: 30
 
       - name: Set up Node.js
+        if: ${{ inputs.run_frontend_admin }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
 
       - name: Install frontend dependencies for audit
+        if: ${{ inputs.run_frontend_admin }}
         run: |
           cd frontend-admin
           npm ci
 
       - name: Run frontend dependency audit
+        if: ${{ inputs.run_frontend_admin }}
         run: |
           cd frontend-admin
           npm audit --audit-level=high
 
       - name: Generate backend dependency license inventory
+        if: ${{ inputs.run_backend }}
         run: |
           mkdir -p .artifacts/license-checks .artifacts/licenses
           python -m venv .artifacts/license-checks/backend
@@ -133,6 +177,7 @@ jobs:
           .artifacts/license-checks/backend/bin/python -m piplicenses --format=json > .artifacts/licenses/backend.json
 
       - name: Generate edge-client dependency license inventory
+        if: ${{ inputs.run_edge_client }}
         run: |
           mkdir -p .artifacts/license-checks .artifacts/licenses
           python -m venv .artifacts/license-checks/edge-client
@@ -140,17 +185,28 @@ jobs:
           .artifacts/license-checks/edge-client/bin/python -m piplicenses --format=json > .artifacts/licenses/edge-client.json
 
       - name: Generate frontend dependency license inventory
+        if: ${{ inputs.run_frontend_admin }}
         run: |
+          mkdir -p .artifacts/licenses
           cd frontend-admin
           npx --yes license-checker-rseidelsohn@4.4.2 --json > ../.artifacts/licenses/frontend-admin.json
 
       - name: Evaluate dependency license policy
+        if: ${{ inputs.run_backend || inputs.run_edge_client || inputs.run_frontend_admin }}
         run: |
+          inventory_args=()
+          if [ -f .artifacts/licenses/backend.json ]; then
+            inventory_args+=(--inventory backend:pip:.artifacts/licenses/backend.json)
+          fi
+          if [ -f .artifacts/licenses/edge-client.json ]; then
+            inventory_args+=(--inventory edge-client:pip:.artifacts/licenses/edge-client.json)
+          fi
+          if [ -f .artifacts/licenses/frontend-admin.json ]; then
+            inventory_args+=(--inventory frontend-admin:node:.artifacts/licenses/frontend-admin.json)
+          fi
           python scripts/check_dependency_licenses.py \
             --policy policies/licenses/policy.json \
-            --inventory backend:pip:.artifacts/licenses/backend.json \
-            --inventory edge-client:pip:.artifacts/licenses/edge-client.json \
-            --inventory frontend-admin:node:.artifacts/licenses/frontend-admin.json \
+            "${inventory_args[@]}" \
             --report-path .artifacts/licenses/report.json
 
       - name: Upload dependency license report
@@ -163,6 +219,7 @@ jobs:
           retention-days: 30
 
   backend-unit-tests:
+    if: ${{ inputs.run_backend }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: backend-lint
@@ -197,6 +254,7 @@ jobs:
           retention-days: 30
 
   backend-integration-tests:
+    if: ${{ inputs.run_backend }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: backend-lint
@@ -231,9 +289,9 @@ jobs:
           retention-days: 30
 
   frontend-admin-build:
+    if: ${{ inputs.run_frontend_admin }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: backend-lint
     permissions:
       contents: read
     defaults:
@@ -260,9 +318,9 @@ jobs:
         run: npm run build
 
   edge-client-tests:
+    if: ${{ inputs.run_edge_client }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: backend-lint
     permissions:
       contents: read
     defaults:
@@ -286,9 +344,9 @@ jobs:
         run: python -m pytest tests
 
   docker-image-verify:
+    if: ${{ inputs.run_docker_images }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: app-security-scan
     permissions:
       actions: read
       contents: read
@@ -304,12 +362,46 @@ jobs:
         id: image-meta
         run: echo "owner=$(echo '${{ inputs.registry_org }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
+      - name: Create selected image catalog
+        env:
+          CATALOG_PATH: ${{ inputs.catalog_path }}
+          IMAGE_NAMES: ${{ inputs.image_names }}
+        run: |
+          mkdir -p .artifacts
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          catalog_path = Path(os.environ["CATALOG_PATH"])
+          selected = {
+              item.strip()
+              for item in os.environ["IMAGE_NAMES"].split(",")
+              if item.strip()
+          }
+          catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+          available = {item["name"] for item in catalog}
+          missing = sorted(selected - available)
+          if missing:
+              raise SystemExit(f"Unknown image name(s): {', '.join(missing)}")
+
+          filtered = [item for item in catalog if item["name"] in selected]
+          if not filtered:
+              raise SystemExit("No images selected for docker-image-verify.")
+
+          Path(".artifacts/image-catalog.selected.json").write_text(
+              json.dumps(filtered, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print("Selected images:", ", ".join(item["name"] for item in filtered))
+          PY
+
       - name: Build Docker images
         uses: ./.github/actions/build-images
         with:
           image_host: ghcr.io/${{ steps.image-meta.outputs.owner }}
           image_tag: ${{ inputs.image_tag }}
-          catalog_path: ${{ inputs.catalog_path }}
+          catalog_path: .artifacts/image-catalog.selected.json
 
       - name: Reclaim Docker builder cache
         run: docker builder prune -af
@@ -319,14 +411,14 @@ jobs:
         with:
           image_host: ghcr.io/${{ steps.image-meta.outputs.owner }}
           image_tag: ${{ inputs.image_tag }}
-          catalog_path: ${{ inputs.catalog_path }}
+          catalog_path: .artifacts/image-catalog.selected.json
 
       - name: Trivy vulnerability scan
         uses: ./.github/actions/trivy-scan-images
         with:
           image_host: ghcr.io/${{ steps.image-meta.outputs.owner }}
           image_tag: ${{ inputs.image_tag }}
-          catalog_path: ${{ inputs.catalog_path }}
+          catalog_path: .artifacts/image-catalog.selected.json
 
       - name: Combine Trivy SARIF reports
         if: ${{ always() && hashFiles('.artifacts/trivy/*.sarif') != '' }}
@@ -401,7 +493,7 @@ jobs:
         with:
           image_host: ghcr.io/${{ steps.image-meta.outputs.owner }}
           image_tag: ${{ inputs.image_tag }}
-          catalog_path: ${{ inputs.catalog_path }}
+          catalog_path: .artifacts/image-catalog.selected.json
 
       - name: Upload built image archives
         if: ${{ always() }}
@@ -413,6 +505,7 @@ jobs:
           retention-days: 1
 
   docker-smoke-e2e:
+    if: ${{ inputs.run_smoke_e2e }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs:
@@ -438,10 +531,36 @@ jobs:
         id: image-meta
         run: echo "owner=$(echo '${{ inputs.registry_org }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
+      - name: Create selected image catalog
+        env:
+          CATALOG_PATH: ${{ inputs.catalog_path }}
+          IMAGE_NAMES: ${{ inputs.image_names }}
+        run: |
+          mkdir -p .artifacts
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          selected = {
+              item.strip()
+              for item in os.environ["IMAGE_NAMES"].split(",")
+              if item.strip()
+          }
+          catalog = json.loads(Path(os.environ["CATALOG_PATH"]).read_text(encoding="utf-8"))
+          filtered = [item for item in catalog if item["name"] in selected]
+          if not filtered:
+              raise SystemExit("No images selected for docker-smoke-e2e.")
+          Path(".artifacts/image-catalog.selected.json").write_text(
+              json.dumps(filtered, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
       - name: Load previously built Docker images
         uses: ./.github/actions/load-images
         with:
-          catalog_path: ${{ inputs.catalog_path }}
+          catalog_path: .artifacts/image-catalog.selected.json
 
       - name: Set up Python for e2e smoke tests
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
