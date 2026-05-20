@@ -12,8 +12,10 @@ edge devices near the cameras.
   user-facing interface for the security guard or employee.
 - `backend/`: FastAPI APIs, business logic, recognition pipeline, and service
   integration for SQL, object storage, vector search, and background jobs.
-- `frontend-admin/`: admin panel for employee enrollment, threshold tuning,
-  role management, and audit review. It is served at `/admin/`.
+- `frontend-admin/`: admin panel for employee management, token-bound
+  live-camera face enrollment, threshold tuning, role management, and audit
+  review. It is served at `/admin/`; enrollment capture is a module inside this
+  app and uses short-lived enrollment session tokens.
 - `nginx/`: reverse proxy that exposes `/admin/` and `/api/`.
 - `docker-compose.yml`: base stack contract shared by all environments.
 - `docker-compose.dev.yml`: local development override (builds images and brings db, redis, minio).
@@ -55,7 +57,8 @@ For AWS staging and production, the practical target is different:
 ### Server side
 
 - `nginx` listens on port `80`
-- `/admin/` routes to `frontend-admin`
+- `/admin/` routes to `frontend-admin`, including `#/enroll/session/{token}`
+- `/enroll/` redirects to `/admin/` for compatibility
 - `/api/` routes to `backend`
 - `backend` talks to external PostgreSQL, external Redis or Valkey, and S3
 - `worker` consumes async jobs from external Redis or Valkey and can scale independently from the API
@@ -105,7 +108,8 @@ project-root/
 
 ## URL Layout
 
-- `http://your-server-domain/admin/`: admin frontend
+- `http://your-server-domain/admin/`: admin frontend and token-bound enrollment module
+- `http://your-server-domain/enroll/`: compatibility redirect to the admin frontend
 - `http://your-server-domain/api/health`: backend health
 - `edge-client`: entrance kiosk flow
 
@@ -475,7 +479,7 @@ dataset/gallery/<employee_id>/<image>.jpg
 Then run:
 
 ```bash
-python scripts/evaluate_model.py --gallery-dir dataset/gallery --query-dir dataset/query --threshold 0.35
+python scripts/evaluate_model.py --gallery-dir dataset/gallery --query-dir dataset/query --threshold 0.55
 ```
 
 The script prints precision, recall, F1-score, and a classification report.
@@ -512,9 +516,23 @@ Common backend runtime keys:
 - `MINIO_*`
 - `AWS_S3_BUCKET`
 - `AWS_S3_REGION`
+- `EMBEDDING_PROVIDER`
 - `MODEL_NAME`
 - `MODEL_VERSION`
+- `EMBEDDING_DIMENSIONS`
+- `DEEPFACE_DETECTOR_BACKEND`
+- `DEEPFACE_ALIGN`
+- `DEEPFACE_ENFORCE_DETECTION`
+- `EMBEDDING_ALLOW_HASH_FALLBACK`
 - `MATCH_THRESHOLD`
+- `ENROLLMENT_MIN_SAMPLES`
+- `ENROLLMENT_MAX_SAMPLES`
+
+The default backend embedding runtime is DeepFace with `MODEL_NAME=Facenet512`
+and `EMBEDDING_DIMENSIONS=512`. The `hash` provider is only for deterministic
+unit tests and plumbing smoke tests; it is not a real face-recognition model.
+When `EMBEDDING_PROVIDER=deepface`, the backend fails closed if DeepFace cannot
+load or returns an embedding with the wrong dimensions.
 
 Edge-device keys:
 
@@ -529,17 +547,16 @@ architecture, but the core business features still need implementation:
 
 - employee CRUD
 - role and authentication management
-- actual DeepFace embedding and matching
 - production-grade snapshot upload and retention on S3
 - richer `pgvector` indexing and search behavior
 - background re-indexing jobs
-- kiosk UI richer than console output
+- stronger enrollment quality checks and liveness controls
 - tests and database migrations
 
 ## Suggested Next Steps
 
 1. Implement Postgres models for employees, users, roles, and recognition logs.
-2. Replace stub recognition services with production DeepFace + pgvector integration.
+2. Add multi-sample face enrollment quality checks and liveness gates.
 3. Add authentication and role-based admin APIs.
 4. Expand the edge kiosk UI beyond console status output.
 5. Add backup scripts, monitoring compose, and stronger CI/CD verification.

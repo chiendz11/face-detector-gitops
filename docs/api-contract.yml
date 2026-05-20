@@ -64,6 +64,13 @@ paths:
       summary: List registered employees
       security:
         - bearerAuth: []
+      parameters:
+        - name: include_inactive
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: Employee list
@@ -114,9 +121,51 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   /admin/employees/{employee_code}:
+    patch:
+      tags: [admin]
+      summary: Update editable employee profile fields
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: employee_code
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeUpdate'
+      responses:
+        '200':
+          description: Employee updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeRecord'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Employee not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags: [admin]
-      summary: Delete an employee by code
+      summary: Soft-delete an employee by code and revoke its face embedding
       security:
         - bearerAuth: []
       parameters:
@@ -127,7 +176,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Employee deleted
+          description: Employee soft-deleted
           content:
             application/json:
               schema:
@@ -194,6 +243,229 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Employee not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/employees/{employee_code}/restore:
+    post:
+      tags: [admin]
+      summary: Restore a soft-deleted employee record
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: employee_code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Employee restored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeRecord'
+        '400':
+          description: Blank or invalid employee code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Employee not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/employees/{employee_code}/enroll-samples:
+    post:
+      tags: [admin]
+      summary: Enroll an employee from multiple live face samples
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: employee_code
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  minItems: 3
+                  maxItems: 10
+                  items:
+                    type: string
+                    format: binary
+                device_name:
+                  type: string
+                  nullable: true
+              required: [files]
+      responses:
+        '200':
+          description: Multi-sample face embedding persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeFaceEnrollSamplesResponse'
+        '400':
+          description: Invalid samples, sample count, or employee code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Employee not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Embedding provider unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/employees/{employee_code}/enrollment-sessions:
+    post:
+      tags: [admin]
+      summary: Create a short-lived token-bound enrollment session
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: employee_code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Enrollment session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollmentSessionCreateResponse'
+        '400':
+          description: Blank or invalid employee code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Employee not found or inactive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/enrollment-sessions/{token}:
+    get:
+      tags: [admin]
+      summary: Read a token-bound enrollment session
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Enrollment session status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollmentSessionStatusResponse'
+        '400':
+          description: Blank or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Enrollment session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: Enrollment session can no longer be used
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/enrollment-sessions/{token}/complete:
+    post:
+      tags: [admin]
+      summary: Complete enrollment using a short-lived session token
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  minItems: 3
+                  maxItems: 10
+                  items:
+                    type: string
+                    format: binary
+                device_name:
+                  type: string
+                  nullable: true
+              required: [files]
+      responses:
+        '200':
+          description: Multi-sample face embedding persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeFaceEnrollSamplesResponse'
+        '400':
+          description: Invalid token, samples, or sample count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: Enrollment session expired, completed, revoked, or employee inactive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Embedding provider unavailable
           content:
             application/json:
               schema:
@@ -283,6 +555,15 @@ components:
           type: string
           nullable: true
       required: [employee_code, full_name]
+    EmployeeUpdate:
+      type: object
+      properties:
+        full_name:
+          type: string
+          nullable: true
+        department:
+          type: string
+          nullable: true
     EmployeeRecord:
       allOf:
         - $ref: '#/components/schemas/EmployeeCreate'
@@ -322,6 +603,53 @@ components:
         message:
           type: string
       required: [employee_code, enrolled, embedding_dimensions, message]
+    EmployeeFaceEnrollSamplesResponse:
+      allOf:
+        - $ref: '#/components/schemas/EmployeeFaceEnrollResponse'
+        - type: object
+          properties:
+            sample_count:
+              type: integer
+            device_name:
+              type: string
+              nullable: true
+          required: [sample_count]
+    EnrollmentSessionCreateResponse:
+      type: object
+      properties:
+        session_id:
+          type: integer
+        employee_code:
+          type: string
+        token:
+          type: string
+        enrollment_url:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+      required: [session_id, employee_code, token, enrollment_url, expires_at, status]
+    EnrollmentSessionStatusResponse:
+      type: object
+      properties:
+        employee_code:
+          type: string
+        full_name:
+          type: string
+        department:
+          type: string
+          nullable: true
+        status:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        sample_count:
+          type: integer
+          nullable: true
+      required: [employee_code, full_name, status, expires_at]
     RecognitionResult:
       type: object
       properties:
