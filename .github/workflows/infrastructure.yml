@@ -968,6 +968,18 @@ jobs:
                 throw error;
               }
             }
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number(process.env.PR_NUMBER),
+                name: 'sandbox-validated',
+              });
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
       - name: Build sandbox destroy PR comment
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
         env:

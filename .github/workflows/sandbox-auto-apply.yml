@@ -52,8 +52,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Resolve changed files
-        id: resolve_files
+      - name: Resolve PR sandbox context
+        id: pr_context
         uses: actions/github-script@v7
         with:
           script: |
@@ -66,7 +66,23 @@ jobs:
               if (!workflowRun) return null;
               const linkedPulls = workflowRun.pull_requests || [];
               const candidate = linkedPulls.find((p) => p.base?.ref === (context.payload.repository?.default_branch || 'master')) || linkedPulls[0];
-              if (!candidate) return null;
+              if (!candidate) {
+                const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: workflowRun.head_sha,
+                });
+                const defaultBranch = context.payload.repository?.default_branch || 'master';
+                const pull = associated.data.find((p) => p.state === 'open' && p.base?.ref === defaultBranch) || associated.data.find((p) => p.state === 'open');
+                if (!pull) return null;
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pull.number,
+                });
+                if (pr.head.sha !== workflowRun.head_sha) { core.info('stale workflow-run'); return null; }
+                return pr;
+              }
               const { data: pr } = await github.rest.pulls.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -77,7 +93,11 @@ jobs:
             }
 
             const pr = await resolvePullRequest();
-            if (!pr) { core.info('no PR to resolve changed files for'); return; }
+            if (!pr) {
+              core.info('no PR to resolve sandbox context for');
+              core.setOutput('pr_found', 'false');
+              return;
+            }
 
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
@@ -88,36 +108,98 @@ jobs:
             const paths = files.map(f => f.filename);
             fs.writeFileSync('.sandbox-policy-files', paths.join('\n'));
 
-      - name: Get PR approvals
-        id: approvals
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
-            });
             const reviews = await github.paginate(github.rest.pulls.listReviews, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.issue.number,
+              pull_number: pr.number,
               per_page: 100,
             });
             const approversArray = Array.from(new Set(reviews.filter(r => r.state === 'APPROVED').map(r => r.user.login)));
-            const fs = require('fs');
             fs.writeFileSync('.sandbox-policy-approvers', JSON.stringify(approversArray));
             fs.writeFileSync('.sandbox-policy-approvals', String(approversArray.length));
-            core.setOutput('approval_count', approversArray.length);
+
+            const syntheticEvent = {
+              repository: context.payload.repository,
+              sender: context.payload.sender || { login: context.actor },
+              pull_request: pr,
+            };
+            fs.writeFileSync('.sandbox-policy-event.json', JSON.stringify(syntheticEvent, null, 2));
+
+            const presentLabels = new Set((pr.labels || []).map(l => l.name));
+            const repoOwner = context.repo.owner;
+            const botUsers = new Set(['github-actions[bot]', 'dependabot[bot]']);
+            const systemUsers = new Set(['github-actions[bot]']);
+            const humanTrustedLabels = new Set(['allow-self-approve', 'deploy-sandbox', 'deploy-preview', 'skip-sandbox-approved']);
+            const systemTrustedLabels = new Set(['sandbox-validated', 'sandbox-recommended', 'sandbox-required', 'ready-for-deploy']);
+            const trackedLabels = [
+              'allow-self-approve',
+              'deploy-sandbox',
+              'deploy-preview',
+              'skip-sandbox-approved',
+              'sandbox-validated',
+              'sandbox-recommended',
+              'sandbox-required',
+              'ready-for-deploy',
+            ];
+
+            let headCommittedAt = pr.updated_at || '';
+            try {
+              const commit = await github.rest.repos.getCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: pr.head.sha,
+              });
+              headCommittedAt = commit.data.commit.committer?.date || commit.data.commit.author?.date || headCommittedAt;
+            } catch (error) {
+              core.info(`Unable to resolve PR head commit timestamp: ${error.message}`);
+            }
+
+            const events = await github.paginate(github.rest.issues.listEvents, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              per_page: 100,
+            });
+
+            const trust = {};
+            for (const label of trackedLabels) {
+              const labelEvents = events.filter((event) =>
+                event.event === 'labeled' && event.label && event.label.name === label
+              );
+              const latest = labelEvents
+                .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at))
+                .pop();
+              const actor = (latest && latest.actor && latest.actor.login) || '';
+              const labeledAt = latest ? latest.created_at : null;
+              const freshForHead = !headCommittedAt || !labeledAt || Date.parse(labeledAt) >= Date.parse(headCommittedAt);
+              const trusted = presentLabels.has(label) && (
+                (humanTrustedLabels.has(label) && actor === repoOwner && !botUsers.has(actor)) ||
+                (systemTrustedLabels.has(label) && systemUsers.has(actor) && freshForHead)
+              );
+              trust[label] = {
+                present: presentLabels.has(label),
+                actor,
+                trusted,
+                labeledAt,
+                freshForHead,
+                headCommittedAt,
+              };
+            }
+
+            fs.writeFileSync('.sandbox-policy-label-trust.json', JSON.stringify(trust, null, 2));
+            core.setOutput('pr_found', 'true');
+            core.setOutput('pr_number', String(pr.number));
 
       - name: Evaluate sandbox policy
+        if: steps.pr_context.outputs.pr_found == 'true'
         run: |
           mkdir -p .artifacts/sandbox-policy
           python scripts/evaluate_sandbox_requirement.py \
-            --event-path "$GITHUB_EVENT_PATH" \
+            --event-path .sandbox-policy-event.json \
             --changed-files-path .sandbox-policy-files \
             --approvers-path .sandbox-policy-approvers \
             --codeowners-path .github/CODEOWNERS \
+            --label-trust-path .sandbox-policy-label-trust.json \
             --approvals-path .sandbox-policy-approvals \
             --report-path .artifacts/sandbox-policy/report.json
 
@@ -141,10 +223,13 @@ jobs:
             const report = JSON.parse(fs.readFileSync(process.env.REPORT_FILE, 'utf8'));
             // runtime error in evaluator -> do not apply
             if (report.decision === 'error') { core.info('evaluator runtime error; skip apply'); core.setOutput('should_apply', 'false'); return; }
-            // governance block: absolute no-deploy
-            if (report.block) { core.info(`governance block present: ${JSON.stringify(report.blockingReasons || [])}`); core.setOutput('should_apply', 'false'); return; }
-            // maintain existing semantic: require explicit pass
-            if (report.decision !== 'pass') { core.info('report not pass'); core.setOutput('should_apply', 'false'); return; }
+            // Deployment is controlled by explicit owner intent, not by merge pass/fail.
+            // Critical PRs may be merge-blocked while still being eligible for sandbox apply.
+            if (!report.autoApplyEligible || !report.deployLabelTrusted) {
+              core.info('report is not eligible for sandbox auto-apply');
+              core.setOutput('should_apply', 'false');
+              return;
+            }
 
             const workflowPolicies = [
               { file: 'repo-security.yml', label: 'Repo Security', event: 'pull_request', always: true },
@@ -189,7 +274,19 @@ jobs:
               if (!workflowRun) return null;
               const linkedPulls = workflowRun.pull_requests || [];
               const candidate = linkedPulls.find((p) => p.base?.ref === (context.payload.repository?.default_branch || 'master')) || linkedPulls[0];
-              if (!candidate) return null;
+              if (!candidate) {
+                const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: workflowRun.head_sha,
+                });
+                const defaultBranch = context.payload.repository?.default_branch || 'master';
+                const pull = associated.data.find((p) => p.state === 'open' && p.base?.ref === defaultBranch) || associated.data.find((p) => p.state === 'open');
+                if (!pull) return null;
+                const { data: pr } = await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: pull.number });
+                if (pr.head.sha !== workflowRun.head_sha) { core.info('stale workflow-run'); return null; }
+                return pr;
+              }
               const { data: pr } = await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: candidate.number });
               if (pr.head.sha !== workflowRun.head_sha) { core.info('stale workflow-run'); return null; }
               return pr;
@@ -202,16 +299,6 @@ jobs:
             const deployLabels = ['deploy-sandbox', 'deploy-preview'];
             const deployLabel = deployLabels.find(label => labels.includes(label));
             if (!deployLabel) { core.info('no sandbox deploy label'); core.setOutput('should_apply', 'false'); return; }
-
-            // verify label actor was a human
-            const events = await github.paginate(github.rest.issues.listEvents, { owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, per_page: 100 });
-            const labelEvents = events.filter(e => e.event === 'labeled' && e.label && e.label.name === deployLabel);
-            if (labelEvents.length === 0) { core.info('no label events'); core.setOutput('should_apply', 'false'); return; }
-            const last = labelEvents.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)).pop();
-            const actor = (last.actor && last.actor.login) || '';
-            const botUsers = new Set(['github-actions[bot]', 'dependabot[bot]']);
-            if (botUsers.has(actor)) { core.info('label added by bot; skip auto-apply'); core.setOutput('should_apply', 'false'); return; }
-            if (actor !== context.repo.owner) { core.info('label not added by repository owner; skip auto-apply'); core.setOutput('should_apply', 'false'); return; }
 
             const { pending, failing } = await evaluateWorkflowGates(pr.head.sha);
             if (pending.length > 0 || failing.length > 0) { core.info('CI gates not ready'); core.setOutput('should_apply', 'false'); return; }
@@ -309,3 +396,71 @@ jobs:
       source_git_sha: ${{ needs.evaluate-policy.outputs.source_git_sha }}
       owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
     secrets: inherit
+
+  mark-sandbox-validated:
+    needs:
+      - evaluate-policy
+      - bootstrap-sandbox
+    if: needs.evaluate-policy.outputs.should_apply == 'true' && needs.bootstrap-sandbox.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Refresh sandbox validation label
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PR_NUMBER: ${{ needs.evaluate-policy.outputs.pr_number }}
+          SOURCE_GIT_SHA: ${{ needs.evaluate-policy.outputs.source_git_sha }}
+        with:
+          script: |
+            const issue_number = Number(process.env.PR_NUMBER);
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                name: 'sandbox-validated',
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              labels: ['sandbox-validated'],
+            });
+
+            const marker = '<!-- sandbox-validation-status -->';
+            const body = [
+              marker,
+              '## Sandbox Validation',
+              '',
+              `Sandbox apply and bootstrap passed for head SHA \`${process.env.SOURCE_GIT_SHA}\`.`,
+              '',
+              'The `sandbox-validated` label was refreshed by GitHub Actions for this exact PR head.',
+            ].join('\n');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.user.type === 'Bot' && comment.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                body,
+              });
+            }

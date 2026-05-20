@@ -85,7 +85,31 @@ jobs:
             const presentLabels = new Set((pr.labels || []).map(l => l.name));
             const repoOwner = context.repo.owner;
             const botUsers = new Set(['github-actions[bot]', 'dependabot[bot]']);
-            const trackedLabels = ['allow-self-approve', 'deploy-sandbox', 'deploy-preview'];
+            const systemUsers = new Set(['github-actions[bot]']);
+            const humanTrustedLabels = new Set(['allow-self-approve', 'deploy-sandbox', 'deploy-preview', 'skip-sandbox-approved']);
+            const systemTrustedLabels = new Set(['sandbox-validated', 'sandbox-recommended', 'sandbox-required', 'ready-for-deploy']);
+            const trackedLabels = [
+              'allow-self-approve',
+              'deploy-sandbox',
+              'deploy-preview',
+              'skip-sandbox-approved',
+              'sandbox-validated',
+              'sandbox-recommended',
+              'sandbox-required',
+              'ready-for-deploy',
+            ];
+
+            let headCommittedAt = pr.updated_at || '';
+            try {
+              const commit = await github.rest.repos.getCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: pr.head.sha,
+              });
+              headCommittedAt = commit.data.commit.committer?.date || commit.data.commit.author?.date || headCommittedAt;
+            } catch (error) {
+              core.info(`Unable to resolve PR head commit timestamp: ${error.message}`);
+            }
 
             const events = await github.paginate(github.rest.issues.listEvents, {
               owner: context.repo.owner,
@@ -103,12 +127,19 @@ jobs:
                 .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at))
                 .pop();
               const actor = (latest && latest.actor && latest.actor.login) || '';
-              const trusted = presentLabels.has(label) && actor === repoOwner && !botUsers.has(actor);
+              const labeledAt = latest ? latest.created_at : null;
+              const freshForHead = !headCommittedAt || !labeledAt || Date.parse(labeledAt) >= Date.parse(headCommittedAt);
+              const trusted = presentLabels.has(label) && (
+                (humanTrustedLabels.has(label) && actor === repoOwner && !botUsers.has(actor)) ||
+                (systemTrustedLabels.has(label) && systemUsers.has(actor) && freshForHead)
+              );
               trust[label] = {
                 present: presentLabels.has(label),
                 actor,
                 trusted,
-                labeledAt: latest ? latest.created_at : null,
+                labeledAt,
+                freshForHead,
+                headCommittedAt,
               };
             }
 
@@ -134,6 +165,42 @@ jobs:
             --approvals-path .sandbox-policy-approvals \
             $EXTRA \
             --report-path .artifacts/sandbox-policy/report.json
+
+      - name: Reconcile sandbox governance labels
+        if: ${{ always() && hashFiles('.artifacts/sandbox-policy/report.json') != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          REPORT_FILE: .artifacts/sandbox-policy/report.json
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync(process.env.REPORT_FILE, 'utf8'));
+            const labels = new Set(context.payload.pull_request.labels.map((label) => label.name));
+            const desired = new Set();
+            if (report.sandboxRequired) desired.add('sandbox-required');
+            if (report.sandboxRecommended) desired.add('sandbox-recommended');
+
+            for (const label of ['sandbox-required', 'sandbox-recommended']) {
+              if (desired.has(label) && !labels.has(label)) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  labels: [label],
+                });
+              } else if (!desired.has(label) && labels.has(label)) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                    name: label,
+                  });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+              }
+            }
 
       - name: Fail if governance block
         if: ${{ always() && hashFiles('.artifacts/sandbox-policy/report.json') != '' }}
@@ -171,11 +238,16 @@ jobs:
               '',
               f"- Decision: `{report['decision']}`",
               f"- Lane: `{report['classification']}`",
+              f"- Risk level: `{report.get('riskLevel', report['classification'])}`",
               f"- Branch: `{report['branch']}`",
               f"- Deploy label present: `{report['hasDeployLabel']}`",
               f"- Governance mode: `{report.get('governanceMode', 'unknown')}`",
               f"- Trusted deploy label: `{report.get('deployLabel') or 'none'}`",
               f"- Deploy label actor: `{report.get('deployLabelActor') or 'none'}`",
+              f"- Sandbox recommended: `{report.get('sandboxRecommended', False)}`",
+              f"- Sandbox required: `{report.get('sandboxRequired', False)}`",
+              f"- Sandbox validated: `{report.get('sandboxValidatedTrusted', False)}`",
+              f"- Sandbox waiver trusted: `{report.get('skipSandboxTrusted', False)}`",
               f"- Self-approve label trusted: `{report.get('selfApproveLabelTrusted', False)}`",
               f"- Self-approve label actor: `{report.get('selfApproveLabelActor') or 'none'}`",
               '',
@@ -201,7 +273,7 @@ jobs:
           path: .artifacts/sandbox-policy/
 
       - name: Mark ready-for-deploy (bot)
-        if: ${{ hashFiles('.artifacts/sandbox-policy/report.json') != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ always() && hashFiles('.artifacts/sandbox-policy/report.json') != '' && github.event.pull_request.head.repo.full_name == github.repository }}
         uses: actions/github-script@v7
         env:
           REPORT_FILE: .artifacts/sandbox-policy/report.json
@@ -329,10 +401,12 @@ jobs:
               marker,
               '## Sandbox Policy',
               '',
-              'This PR is currently classified as a heavy-lane change and is missing a trusted governance label or approval.',
+              'This PR is currently blocked by sandbox governance.',
               '',
               '- Have the repository owner add `deploy-sandbox` or `deploy-preview` if this PR should go through the sandbox auto-apply flow.',
-              '- Have the repository owner add `allow-self-approve` only for non-critical heavy changes that do not need a sandbox deploy.',
+              '- Wait for the system to add `sandbox-validated` after sandbox apply and smoke validation pass.',
+              '- If the owner accepts the risk without sandbox validation, add `skip-sandbox-approved` as an explicit waiver.',
+              '- `allow-self-approve` only affects review/CODEOWNERS governance; it does not bypass `sandbox-required`.',
               '- If this should stay in the fast lane, reduce the blast radius or split the change so the heavy-path files are isolated.',
               '',
               '### Why this PR is considered heavy',

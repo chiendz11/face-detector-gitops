@@ -1,72 +1,79 @@
-# Sandbox Policy (Enterprise)
+# Sandbox Policy
 
-Tài liệu này mô tả policy và flow sandbox dùng trong repo.
+This document defines the custom sandbox governance gate for pull requests.
 
-## Mục tiêu
-- Phân loại PR theo rủi ro (LIGHT / HEAVY).
-- Áp dụng governance mạnh mẽ cho các thay đổi nhạy cảm (blocking).
-- Cho phép developer velocity cho thay đổi low-risk (fast path).
-- Duy trì audit trail và khả năng override có kiểm soát.
+## Goals
 
-## Định nghĩa
-- LIGHT: thay đổi có blast radius thấp, rollback dễ, không ảnh hưởng shared systems.
-  - Ví dụ: `frontend/*`, `backend/api/*`, `tests/*`, docs, README.
-  - Flow: CI + security → nếu pass thì merge được; sandbox optional.
+- Keep normal application changes fast.
+- Require production-like validation for critical control-plane changes.
+- Keep deployment intent, review bypass, and risk waiver as separate decisions.
+- Preserve an audit trail through labels, `report.json`, PR comments, and workflow artifacts.
 
-- HEAVY: thay đổi có blast radius lớn, ảnh hưởng infra, CI/CD, mạng, IAM, DB migrations.
-  - Ví dụ: `terraform/**`, `.github/workflows/**`, `backend/alembic/**`, `iam/**`, `network/**`.
-  - Flow: governance checks (approvals/CODEOWNERS) → sandbox verify → merge.
+## Lanes
 
-## Blocking vs Advisory
-- Blocking (governance core): `report.block == true` (tuyệt đối không deploy). Các nguyên nhân:
-  - Thiếu approvals / CODEOWNERS trên heavy paths.
-  - Chạm critical paths (terraform prod, db migrations, IAM/network, auth, ...).
-  - Evaluator runtime error (`decision: "error"`).
-  - Khi `block=true`, CI job `Sandbox Policy` sẽ fail và merge bị chặn (branch protection có thể áp dụng).
+- `fast`: local, low-blast-radius changes. Sandbox policy passes.
+- `heavy` + non-critical: the bot may add `sandbox-recommended`. This is advisory and does not block merge by itself.
+- `heavy` + critical: the bot adds `sandbox-required`. Merge is blocked until sandbox validation passes or the owner applies an explicit waiver.
 
-- Advisory: `decision` có thể là `pass|fail|advisory`; bot chỉ **recommend** `ready-for-deploy` khi `decision == "pass"` và CI gates OK. Advisory không ngăn merge.
+Critical paths include workflow/policy/control-plane files, Terraform, deploy manifests, ingress/reverse proxy files, database migrations, IAM/network/auth paths, and sandbox policy evaluator scripts.
 
-## Labels và semantics
-- `deploy-sandbox` / `deploy-preview`: human opt-in label — bắt buộc để auto-apply sandbox; chỉ chấp nhận khi label do `actor.type == 'User'` (không phải bot).
-- `ready-for-deploy`: bot label chỉ để chỉ ra PR đã sẵn sàng (bot thêm khi `decision == 'pass'` và CI gates OK).
-- `sandbox-active`: áp dụng khi sandbox đã được apply (dùng cho quota enforcement).
-- `sandbox-exempt`: (optional) label cho phép bypass policy — chỉ cho phép do admin/CODEOWNERS; nếu dùng, phải log và audit.
+## Labels
 
-## Report schema (versioned)
-- File: `.artifacts/sandbox-policy/report.json`
-- Trường tối thiểu:
-```json
-{
-  "version": "1",
-  "timestamp": "2026-05-14T12:00:00Z",
-  "branch": "feature/xyz",
-  "changedFiles": ["..."],
-  "classification": "heavy",
-  "decision": "pass|fail|advisory|error",
-  "block": false,
-  "blockingReasons": [],
-  "touchesCriticalPaths": false,
-  "approvers": [],
-  "matchedOwners": [],
-  "reasonGroups": [],
-  "summary": "..."
-}
-```
-- Lưu ý: `block==true` luôn có hiệu lực chặn deploy.
+- `allow-self-approve`: owner-only review governance opt-in. It does not bypass `sandbox-required`.
+- `sandbox-recommended`: bot advisory label for heavy non-critical PRs.
+- `sandbox-required`: bot hard-gate label for critical PRs.
+- `deploy-sandbox` / `deploy-preview`: owner-only deployment intent labels. They let auto-apply run; they are not waiver labels.
+- `sandbox-validated`: bot label refreshed after sandbox apply and smoke/bootstrap validation pass for the current PR head.
+- `skip-sandbox-approved`: owner-only explicit waiver. Use rarely, keep it visible, and rely on the report/comment artifact for audit.
+- `sandbox-active`: operational state for quota/cleanup, not reviewer intent.
 
-## Override & Governance
-- Nếu team muốn override blocking behavior:
-  - Thiết lập danh sách admin/CODEOWNERS được phép thêm `sandbox-exempt` hoặc trực tiếp approve PR.
-  - Override phải được logged (comment + artifact) và ghi rõ lý do.
+Human-trusted labels are valid only when the latest label event actor is `github.repository_owner` and not a bot. System-trusted labels are valid only when added by `github-actions[bot]` for the current PR head.
 
-## Operational recommendations
-- Add branch protection to require `Sandbox Policy` check for `master` (optional, nếu muốn blocking enforced).
-- Maintain list of bot accounts for actor checks (e.g. `github-actions[bot]`, `dependabot[bot]`).
-- Implement alerts for `decision == 'error'` (Slack/email) and surface artifact link.
-- Add integration tests to validate full flow (light/heavy/blocking/override).
+## Pass Conditions
 
-## Who to contact
-- Platform/DevOps team: owner of sandbox policy & infra automation.
+Sandbox policy passes when one of these is true:
 
----
-Document version: 1
+- the PR is fast lane.
+- the PR is heavy but non-critical, producing only `sandbox-recommended`.
+- the PR is critical and has trusted `sandbox-validated`.
+- the PR is critical and has trusted `skip-sandbox-approved`.
+
+Sandbox policy does not pass merely because `deploy-sandbox`, `deploy-preview`, or `allow-self-approve` exists.
+
+## Auto-Apply
+
+Auto-apply is eligible only when:
+
+- the PR is same-repository, non-draft, and not Dependabot.
+- a trusted `deploy-sandbox` or `deploy-preview` label exists.
+- the PR is not already `sandbox-validated`.
+- no trusted `skip-sandbox-approved` waiver exists.
+- required CI gates are green.
+
+For critical PRs, auto-apply can run while `Sandbox Policy` is still failing. The policy passes later when the workflow refreshes `sandbox-validated`.
+
+## Report
+
+The evaluator writes `.artifacts/sandbox-policy/report.json` with the governance decision. Important fields include:
+
+- `classification`
+- `riskLevel`
+- `sandboxRecommended`
+- `sandboxRequired`
+- `deployLabelTrusted`
+- `sandboxValidatedTrusted`
+- `skipSandboxTrusted`
+- `autoApplyEligible`
+- `blockingReasons`
+- `matchedOwners`
+- `approvers`
+
+`block: true` is the merge-blocking signal for the `Sandbox Policy` check.
+
+## Operations
+
+- Require the `Sandbox Policy` check on `master` if this gate should enforce mergeability.
+- Keep `deploy-sandbox` and `skip-sandbox-approved` owner-only.
+- Remove deploy labels when sandbox validation is no longer needed.
+- Destroying a sandbox must clear stale `sandbox-validated`.
+- For solo projects, `github.repository_owner` is the correct trusted human boundary. For multi-team repos, replace it with an allowlist, environment approver, or team-based authorization.
