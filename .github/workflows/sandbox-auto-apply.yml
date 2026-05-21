@@ -362,7 +362,7 @@ jobs:
     needs:
       - evaluate-policy
       - enforce-quota
-    if: needs.evaluate-policy.outputs.should_apply == 'true' && needs.enforce-quota.result == 'success'
+    if: github.event_name == 'pull_request_target' && needs.evaluate-policy.outputs.should_apply == 'true' && needs.enforce-quota.result == 'success'
     permissions:
       contents: read
       id-token: write
@@ -378,11 +378,48 @@ jobs:
       owner_login: ${{ needs.evaluate-policy.outputs.owner_login }}
     secrets: inherit
 
+  signal-apply-ready:
+    needs:
+      - evaluate-policy
+      - enforce-quota
+    if: github.event_name == 'workflow_run' && needs.evaluate-policy.outputs.should_apply == 'true' && needs.enforce-quota.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Refresh ready-for-deploy label
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PR_NUMBER: ${{ needs.evaluate-policy.outputs.pr_number }}
+        with:
+          script: |
+            const issue_number = Number(process.env.PR_NUMBER);
+            const label = 'ready-for-deploy';
+
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                name: label,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              labels: [label],
+            });
+
   bootstrap-sandbox:
     needs:
       - evaluate-policy
       - apply-infrastructure
-    if: needs.evaluate-policy.outputs.should_apply == 'true' && needs.apply-infrastructure.result == 'success'
+    if: github.event_name == 'pull_request_target' && needs.evaluate-policy.outputs.should_apply == 'true' && needs.apply-infrastructure.result == 'success'
     permissions:
       contents: read
       id-token: write
@@ -402,7 +439,7 @@ jobs:
     needs:
       - evaluate-policy
       - bootstrap-sandbox
-    if: needs.evaluate-policy.outputs.should_apply == 'true' && needs.bootstrap-sandbox.result == 'success'
+    if: github.event_name == 'pull_request_target' && needs.evaluate-policy.outputs.should_apply == 'true' && needs.bootstrap-sandbox.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       issues: write
