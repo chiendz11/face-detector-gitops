@@ -22,6 +22,7 @@ spec:
           value: ${FRONTEND_IMAGE_REPOSITORY}
         - name: nginx.image.repository
           value: ${NGINX_IMAGE_REPOSITORY}
+${IMAGE_DIGEST_PARAMETER}
 ${IMAGE_PULL_SECRET_PARAMETER}
   destination:
     server: https://kubernetes.default.svc

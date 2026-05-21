@@ -435,6 +435,46 @@ class GitOpsPromotionContractTest(unittest.TestCase):
         self.assertEqual(written["featureFlags"], {"demoMode": True})
 
 
+class AppCdSandboxBootstrapContractTest(unittest.TestCase):
+    def test_sandbox_bootstrap_publishes_pr_images_and_overrides_helm_digests(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/app-cd.yml")
+        bootstrap = workflow["jobs"]["bootstrap"]
+        self.assertEqual(bootstrap["permissions"]["packages"], "write")
+
+        digest_check = extract_step(workflow, "bootstrap", "Verify promoted image digests exist in Git")
+        self.assertIn("deployment_environment != 'sandbox'", digest_check["if"])
+
+        self.assertEqual(
+            extract_uses_step(workflow, "bootstrap", "Set up Docker Buildx for sandbox images"),
+            "docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f",
+        )
+        self.assertEqual(
+            extract_uses_step(workflow, "bootstrap", "Build sandbox deploy images"),
+            "./.github/actions/build-images",
+        )
+        self.assertEqual(
+            extract_uses_step(workflow, "bootstrap", "Log in to GHCR for sandbox image publish"),
+            "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9",
+        )
+
+        resolve_script = extract_run_step(workflow, "bootstrap", "Resolve sandbox image digests")
+        self.assertIn("face-detector-backend", resolve_script)
+        self.assertIn("face-detector-admin", resolve_script)
+        self.assertIn("face-detector-nginx", resolve_script)
+        self.assertIn("backend.image.digest", resolve_script)
+        self.assertIn("worker.image.digest", resolve_script)
+        self.assertIn("frontendAdmin.image.digest", resolve_script)
+        self.assertIn("nginx.image.digest", resolve_script)
+
+        template = (REPO_ROOT / "deploy/argocd/staging-application.yaml.tpl").read_text(encoding="utf-8")
+        self.assertIn("${IMAGE_DIGEST_PARAMETER}", template)
+
+    def test_sandbox_auto_apply_allows_package_publish_for_bootstrap(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-auto-apply.yml")
+        permissions = workflow["jobs"]["bootstrap-sandbox"]["permissions"]
+        self.assertEqual(permissions["packages"], "write")
+
+
 class ReusableAppReleaseContractTest(unittest.TestCase):
     def test_reusable_app_release_resolve_step_writes_expected_publish_artifacts(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/reusable-app-release.yml")
