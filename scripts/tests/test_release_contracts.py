@@ -505,6 +505,15 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
         permissions = workflow["jobs"]["bootstrap-sandbox"]["permissions"]
         self.assertEqual(permissions["packages"], "write")
 
+    def test_sandbox_auto_apply_label_jobs_can_write_pull_request_labels(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-auto-apply.yml")
+
+        for job_name in ("signal-apply-ready", "mark-sandbox-validated"):
+            with self.subTest(job_name=job_name):
+                permissions = workflow["jobs"][job_name]["permissions"]
+                self.assertEqual(permissions["issues"], "write")
+                self.assertEqual(permissions["pull-requests"], "write")
+
 
 class ReusableAppReleaseContractTest(unittest.TestCase):
     def test_reusable_app_release_resolve_step_writes_expected_publish_artifacts(self) -> None:

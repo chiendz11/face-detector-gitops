@@ -386,7 +386,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Refresh ready-for-deploy label
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
@@ -443,7 +443,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Refresh sandbox validation label
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
