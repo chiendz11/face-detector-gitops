@@ -785,6 +785,32 @@ jobs:
         if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
         run: python3 -m pip install -r backend/requirements-ci.txt
 
+      - name: Resolve smoke test credentials
+        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        id: smoke-credentials
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import uuid
+          from pathlib import Path
+
+          entries = {}
+          for raw_line in Path(".env.runtime").read_text(encoding="utf-8").splitlines():
+              line = raw_line.strip()
+              if not line or line.startswith("#") or "=" not in raw_line:
+                  continue
+              key, value = raw_line.split("=", 1)
+              entries[key.strip()] = value.strip()
+
+          def write_output(name: str, value: str) -> None:
+              delimiter = f"EOF_{uuid.uuid4().hex}"
+              print(f"{name}<<{delimiter}")
+              print(value)
+              print(delimiter)
+
+          write_output("admin_username", entries.get("ADMIN_USERNAME", "admin"))
+          write_output("admin_password", entries.get("ADMIN_PASSWORD", ""))
+          PY
+
       - name: Run post-deploy smoke test
         if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
         env:
@@ -792,14 +818,9 @@ jobs:
           FACE_DETECTOR_OBJECT_STORE_MODE: none
           FACE_DETECTOR_TIMEOUT_SECONDS: "60"
           DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+          FACE_DETECTOR_ADMIN_USERNAME: ${{ steps.smoke-credentials.outputs.admin_username }}
+          FACE_DETECTOR_ADMIN_PASSWORD: ${{ steps.smoke-credentials.outputs.admin_password }}
         run: |
-          set -a
-          . ./.env.runtime
-          set +a
-
-          export FACE_DETECTOR_ADMIN_USERNAME="$ADMIN_USERNAME"
-          export FACE_DETECTOR_ADMIN_PASSWORD="$ADMIN_PASSWORD"
-
           case "$DEPLOYMENT_ENVIRONMENT" in
             sandbox)
               SMOKE_TARGETS="backend/tests/e2e/test_live_shared_smoke.py backend/tests/e2e/test_live_sandbox_smoke.py"

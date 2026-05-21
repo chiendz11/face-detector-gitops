@@ -486,6 +486,20 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
         self.assertIn("kubectl describe deployment/${deployment}", diagnostics_script)
         self.assertIn("kubectl logs", diagnostics_script)
 
+    def test_smoke_test_reads_admin_credentials_without_sourcing_dotenv(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/app-cd.yml")
+
+        credentials_script = extract_run_step(workflow, "bootstrap", "Resolve smoke test credentials")
+        self.assertIn('Path(".env.runtime")', credentials_script)
+        self.assertIn('write_output("admin_username"', credentials_script)
+        self.assertIn('write_output("admin_password"', credentials_script)
+
+        smoke_step = extract_step(workflow, "bootstrap", "Run post-deploy smoke test")
+        self.assertEqual(smoke_step["env"]["FACE_DETECTOR_ADMIN_USERNAME"], "${{ steps.smoke-credentials.outputs.admin_username }}")
+        self.assertEqual(smoke_step["env"]["FACE_DETECTOR_ADMIN_PASSWORD"], "${{ steps.smoke-credentials.outputs.admin_password }}")
+        self.assertNotIn(". ./.env.runtime", smoke_step["run"])
+        self.assertNotIn("set -a", smoke_step["run"])
+
     def test_sandbox_auto_apply_allows_package_publish_for_bootstrap(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-auto-apply.yml")
         permissions = workflow["jobs"]["bootstrap-sandbox"]["permissions"]
