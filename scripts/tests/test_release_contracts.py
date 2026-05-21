@@ -469,6 +469,23 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
         template = (REPO_ROOT / "deploy/argocd/staging-application.yaml.tpl").read_text(encoding="utf-8")
         self.assertIn("${IMAGE_DIGEST_PARAMETER}", template)
 
+    def test_bootstrap_waits_for_argocd_sync_before_rollout_and_dumps_diagnostics(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/app-cd.yml")
+
+        sync_script = extract_run_step(workflow, "bootstrap", "Wait for ArgoCD sync to requested revision")
+        self.assertIn("argocd.argoproj.io/refresh=hard", sync_script)
+        self.assertIn(".status.sync.revision", sync_script)
+        self.assertIn('revision" = "$SOURCE_GIT_SHA"', sync_script)
+        self.assertIn("Timed out waiting for ArgoCD application", sync_script)
+
+        diagnostics = extract_step(workflow, "bootstrap", "Dump rollout diagnostics")
+        self.assertIn("failure()", diagnostics["if"])
+        diagnostics_script = diagnostics["run"]
+        self.assertIn("kubectl get application", diagnostics_script)
+        self.assertIn("kubectl get events", diagnostics_script)
+        self.assertIn("kubectl describe deployment/${deployment}", diagnostics_script)
+        self.assertIn("kubectl logs", diagnostics_script)
+
     def test_sandbox_auto_apply_allows_package_publish_for_bootstrap(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-auto-apply.yml")
         permissions = workflow["jobs"]["bootstrap-sandbox"]["permissions"]

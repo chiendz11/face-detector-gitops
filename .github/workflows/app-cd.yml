@@ -651,6 +651,56 @@ jobs:
           IMAGE_PULL_SECRET_PARAMETER: ${{ steps.ghcr-auth.outputs.parameter_block }}
         run: envsubst < "$APPLICATION_TEMPLATE" | kubectl apply -f -
 
+      - name: Wait for ArgoCD sync to requested revision
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+          SOURCE_GIT_SHA: ${{ inputs.source_git_sha || '' }}
+        run: |
+          set -euo pipefail
+
+          APP_NAME="face-detector-staging"
+          if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then
+            APP_NAME="face-detector-production"
+          fi
+
+          kubectl annotate application "$APP_NAME" \
+            --namespace "$ARGOCD_NAMESPACE" \
+            argocd.argoproj.io/refresh=hard \
+            --overwrite
+
+          deadline=$((SECONDS + 1200))
+          last_status=""
+
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            sync_status=$(kubectl get application "$APP_NAME" --namespace "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)
+            health_status=$(kubectl get application "$APP_NAME" --namespace "$ARGOCD_NAMESPACE" -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+            revision=$(kubectl get application "$APP_NAME" --namespace "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)
+            operation_phase=$(kubectl get application "$APP_NAME" --namespace "$ARGOCD_NAMESPACE" -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)
+
+            current_status="sync=${sync_status:-unknown} health=${health_status:-unknown} revision=${revision:-unknown} operation=${operation_phase:-unknown}"
+            if [ "$current_status" != "$last_status" ]; then
+              echo "ArgoCD application $APP_NAME status: $current_status"
+              last_status="$current_status"
+            fi
+
+            if [ "$sync_status" = "Synced" ]; then
+              if [ -z "$SOURCE_GIT_SHA" ] || [ "$revision" = "$SOURCE_GIT_SHA" ]; then
+                exit 0
+              fi
+            fi
+
+            if [ "$operation_phase" = "Error" ] || [ "$operation_phase" = "Failed" ]; then
+              echo "ArgoCD sync operation failed for $APP_NAME." >&2
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+          echo "Timed out waiting for ArgoCD application $APP_NAME to sync the requested revision." >&2
+          exit 1
+
       - name: Wait for application rollout
         if: steps.cluster.outputs.exists == 'true'
         run: |
@@ -666,6 +716,52 @@ jobs:
             kubectl rollout status deployment/${deployment} --namespace "$APP_NAMESPACE" --timeout=10m
           done
           kubectl rollout status deployment/worker --namespace "$APP_NAMESPACE" --timeout=10m || true
+
+      - name: Dump rollout diagnostics
+        if: failure() && steps.cluster.outputs.exists == 'true'
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+        run: |
+          set +e
+
+          APP_NAME="face-detector-staging"
+          if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then
+            APP_NAME="face-detector-production"
+          fi
+
+          echo "===== ArgoCD application summary ====="
+          kubectl get application "$APP_NAME" --namespace "$ARGOCD_NAMESPACE" -o wide
+
+          echo "===== ArgoCD application status ====="
+          kubectl get application "$APP_NAME" --namespace "$ARGOCD_NAMESPACE" -o yaml
+
+          echo "===== Application deployments ====="
+          kubectl get deployments --namespace "$APP_NAMESPACE" -o wide
+
+          echo "===== Application replicasets ====="
+          kubectl get replicasets --namespace "$APP_NAMESPACE" -o wide
+
+          echo "===== Application pods ====="
+          kubectl get pods --namespace "$APP_NAMESPACE" -o wide
+
+          echo "===== Application jobs ====="
+          kubectl get jobs --namespace "$APP_NAMESPACE" -o wide
+
+          echo "===== Application events ====="
+          kubectl get events --namespace "$APP_NAMESPACE" --sort-by=.lastTimestamp
+
+          for deployment in backend frontend-admin nginx worker; do
+            echo "===== describe deployment/${deployment} ====="
+            kubectl describe deployment/${deployment} --namespace "$APP_NAMESPACE"
+          done
+
+          for component in migration backend frontend-admin nginx worker; do
+            echo "===== describe pods component=${component} ====="
+            kubectl describe pods --namespace "$APP_NAMESPACE" -l "app.kubernetes.io/component=${component}"
+
+            echo "===== logs component=${component} ====="
+            kubectl logs --namespace "$APP_NAMESPACE" -l "app.kubernetes.io/component=${component}" --all-containers=true --tail=200 --prefix
+          done
 
       - name: Wait for public load balancer hostname
         if: steps.cluster.outputs.exists == 'true'
