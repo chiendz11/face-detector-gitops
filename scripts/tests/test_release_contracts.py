@@ -614,6 +614,125 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn('variable "manage_github_oidc_sandbox_role"', variables_tf)
         self.assertIn("default     = false", variables_tf)
 
+    def test_bootstrap_can_manage_task_scoped_sandbox_oidc_roles(self) -> None:
+        main_tf = (REPO_ROOT / "terraform/bootstrap/main.tf").read_text(encoding="utf-8")
+        variables_tf = (REPO_ROOT / "terraform/bootstrap/variables.tf").read_text(encoding="utf-8")
+
+        self.assertIn('resource "aws_iam_role" "github_oidc_sandbox_split"', main_tf)
+        self.assertIn("github_oidc_sandbox_split_default_subjects", main_tf)
+        self.assertIn("terraform-plan-reusable.yml", main_tf)
+        self.assertIn("infrastructure.yml", main_tf)
+        self.assertIn("app-cd.yml", main_tf)
+        self.assertIn('variable "manage_github_oidc_sandbox_split_roles"', variables_tf)
+        self.assertIn('"Role-Sandbox-Plan"', variables_tf)
+        self.assertIn('"Role-Sandbox-Apply"', variables_tf)
+        self.assertIn('"Role-Sandbox-Destroy"', variables_tf)
+        self.assertIn('"Role-Sandbox-AppDeploy"', variables_tf)
+
+
+class WorkflowRoleSplitContractTest(unittest.TestCase):
+    def test_sandbox_workflows_load_task_scoped_role_arns_with_legacy_fallback(self) -> None:
+        expectations = {
+            ".github/workflows/terraform-plan-reusable.yml": [
+                "AWS_ROLE_SANDBOX_PLAN_ARN",
+                "--role-sandbox-plan-arn",
+            ],
+            ".github/workflows/infrastructure.yml": [
+                "AWS_ROLE_SANDBOX_APPLY_ARN",
+                "AWS_ROLE_SANDBOX_DESTROY_ARN",
+                "--role-sandbox-apply-arn",
+                "--role-sandbox-destroy-arn",
+            ],
+            ".github/workflows/app-cd.yml": [
+                "AWS_ROLE_SANDBOX_APPDEPLOY_ARN",
+                "--role-sandbox-appdeploy-arn",
+            ],
+        }
+
+        for relative_path, expected_strings in expectations.items():
+            with self.subTest(workflow=relative_path):
+                workflow_text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+                for expected in expected_strings:
+                    self.assertIn(expected, workflow_text)
+                self.assertIn("repo_vars.get(\"AWS_ROLE_SANDBOX_ARN\")", workflow_text)
+
+    def _resolve_context(self, *extra_args: str) -> dict[str, str]:
+        command = [
+            sys.executable,
+            str(REPO_ROOT / "scripts/resolve_workflow_context.py"),
+            "--environment",
+            "sandbox",
+            "--pull-request-number",
+            "123",
+            "--owner-login",
+            "chiendz11",
+            "--ref-name",
+            "feature/example",
+            "--default-branch",
+            "master",
+            "--repository-id",
+            "1210252263",
+            "--github-repository",
+            "chiendz11/Face_dectector",
+            "--github-token",
+            "token",
+            "--git-sha",
+            "a" * 40,
+            "--role-sandbox-arn",
+            "arn:legacy",
+            *extra_args,
+        ]
+
+        env = os.environ.copy()
+        env.pop("GITHUB_OUTPUT", None)
+        result = subprocess.run(command, cwd=REPO_ROOT, env=env, text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+
+    def test_resolver_selects_task_scoped_sandbox_role_by_mode_and_action(self) -> None:
+        plan = self._resolve_context(
+            "--mode",
+            "plan",
+            "--action",
+            "plan",
+            "--role-sandbox-plan-arn",
+            "arn:plan",
+        )
+        apply = self._resolve_context(
+            "--mode",
+            "infrastructure",
+            "--action",
+            "apply",
+            "--role-sandbox-apply-arn",
+            "arn:apply",
+        )
+        destroy = self._resolve_context(
+            "--mode",
+            "infrastructure",
+            "--action",
+            "destroy",
+            "--role-sandbox-destroy-arn",
+            "arn:destroy",
+        )
+        appdeploy = self._resolve_context(
+            "--mode",
+            "bootstrap",
+            "--action",
+            "apply",
+            "--role-sandbox-appdeploy-arn",
+            "arn:appdeploy",
+        )
+
+        self.assertEqual(plan["aws_role_arn"], "arn:plan")
+        self.assertEqual(apply["aws_role_arn"], "arn:apply")
+        self.assertEqual(destroy["aws_role_arn"], "arn:destroy")
+        self.assertEqual(appdeploy["aws_role_arn"], "arn:appdeploy")
+
+    def test_resolver_falls_back_to_legacy_sandbox_role_during_migration(self) -> None:
+        outputs = self._resolve_context("--mode", "plan", "--action", "plan")
+
+        self.assertEqual(outputs["aws_role_arn"], "arn:legacy")
+
 
 class HelmChartContractTest(unittest.TestCase):
     def test_all_private_image_workloads_use_global_image_pull_secrets(self) -> None:

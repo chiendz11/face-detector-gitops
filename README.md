@@ -219,6 +219,7 @@ Required GitHub secrets for the new flow:
 Required GitHub secrets for GitHub OIDC role assumption:
 
 - `AWS_ROLE_SANDBOX_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
+- `AWS_ROLE_SANDBOX_PLAN_ARN`, `AWS_ROLE_SANDBOX_APPLY_ARN`, `AWS_ROLE_SANDBOX_DESTROY_ARN`, and `AWS_ROLE_SANDBOX_APPDEPLOY_ARN` optional during migration. When set, sandbox workflows use the task-scoped role and fall back to `AWS_ROLE_SANDBOX_ARN` only when the scoped ARN is missing.
 - `AWS_ROLE_STAGING_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
 - `AWS_ROLE_PRODUCTION_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
 
@@ -247,14 +248,14 @@ Recommended repository variables for the two-cluster setup:
 - `SANDBOX_NODE_INSTANCE_TYPE`, `SANDBOX_NODE_MIN_SIZE`, `SANDBOX_NODE_MAX_SIZE`, `SANDBOX_NODE_DESIRED_SIZE` (optional; default to a staging-sized sandbox envelope)
 - `SSM_KMS_KEY_ID` (optional; customer-managed KMS key for SSM `SecureString` parameters)
 
-OIDC trust policy templates for the three GitHub roles live under `aws/`, and the full setup checklist is documented in `aws/github-oidc-setup.md`.
+OIDC trust policy templates for the GitHub roles live under `aws/`, including task-scoped sandbox templates for plan, apply, destroy, and app deploy. The full setup checklist is documented in `aws/github-oidc-setup.md`.
 
 The enterprise trust model in this repository is default-branch anchored. Today the repository default branch is still `master`, so the strict reusable workflow references and AWS `job_workflow_ref` strings use `@refs/heads/master`. If you later rename the default branch to `main`, update those pins and trust strings together.
 
 The active workflows are:
 
 - `CI Pipeline`: trunk-based validation on pull requests and pushes to `main` or `master`, plus GHCR image publish on push
-- `Terraform PR Plan`: a `pull_request_target` parent on `main` or `master` that calls a reusable child workflow, resolves an exact PR sandbox identity, assumes `Role-Sandbox` through GitHub OIDC, and comments EKS plus SSM plan output back onto the PR
+- `Terraform PR Plan`: a `pull_request_target` parent on `main` or `master` that calls a reusable child workflow, resolves an exact PR sandbox identity, assumes `Role-Sandbox-Plan` through GitHub OIDC when configured, and comments EKS plus SSM plan output back onto the PR
 - `GitOps Staging Promotion`: after `CI Pipeline` succeeds on `main` or `master`, commits the exact immutable image SHA into `values-staging.yaml`
 - `GitOps Production Promotion`: when a GitHub Release is published, resolves the release commit SHA and commits it into `values-production.yaml`
 - `Sandbox Auto Apply`: the developer-facing `pull_request_target` parent that gates on draft state, deploy label, and quota before calling the reusable infrastructure and bootstrap workflows from the default branch
@@ -270,7 +271,7 @@ There is intentionally no automatic per-PR application preview environment in th
 
 Reviewer-facing rules for when to request `deploy-sandbox` or `deploy-preview` now live in `docs/sandbox-decision-matrix.md`, including the heavy-lane versus fast-lane split, the CI-green prerequisite for auto-apply, and the mandatory auto-destroy lifecycle.
 
-For the trust boundary, keep the sandbox AWS role limited to `main`, `master`, and `devops/*` trusted refs. Protect `devops/*` with GitHub branch rules, and require DevOps approval for `.github/workflows/*` and `aws/github-oidc-*` through `CODEOWNERS` once you have more than one maintainer. If you want AWS to validate the exact reusable workflow path, not just the trusted ref, you must customize GitHub's OIDC `sub` claim to include `job_workflow_ref` and then match that customized `sub` in AWS. If you later move AWS role ARNs into a GitHub Environment such as `Sandbox-Internal`, update the AWS trust policy to match the environment-based OIDC subject because GitHub changes the default `sub` claim for jobs that reference an environment.
+For the trust boundary, keep sandbox AWS roles limited to `main`, `master`, and `devops/*` trusted refs, and prefer task-scoped roles over the legacy consolidated `Role-Sandbox`. Protect `devops/*` with GitHub branch rules, and require DevOps approval for `.github/workflows/*` and `aws/github-oidc-*` through `CODEOWNERS` once you have more than one maintainer. If you want AWS to validate the exact reusable workflow path, not just the trusted ref, you must customize GitHub's OIDC `sub` claim to include `job_workflow_ref` and then match that customized `sub` in AWS. If you later move AWS role ARNs into a GitHub Environment such as `Sandbox-Internal`, update the AWS trust policy to match the environment-based OIDC subject because GitHub changes the default `sub` claim for jobs that reference an environment.
 
 If you are working solo, keep the same separation anyway: use `feature/*` or `dev/*` for app work, and reserve `devops/*` for Terraform, workflow, and OIDC experiments. That keeps your everyday application flow simple while preserving a clean high-risk lane for infrastructure changes.
 

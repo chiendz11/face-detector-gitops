@@ -140,6 +140,8 @@ jobs:
         env:
           AWS_ROLE_SANDBOX_ARN_OVERRIDE: ${{ inputs.sandbox_role_override_arn || '' }}
           AWS_ROLE_SANDBOX_ARN_SECRET: ${{ secrets.AWS_ROLE_SANDBOX_ARN || '' }}
+          AWS_ROLE_SANDBOX_APPLY_ARN_SECRET: ${{ secrets.AWS_ROLE_SANDBOX_APPLY_ARN || '' }}
+          AWS_ROLE_SANDBOX_DESTROY_ARN_SECRET: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
           AWS_ROLE_STAGING_ARN_SECRET: ${{ secrets.AWS_ROLE_STAGING_ARN || '' }}
           AWS_ROLE_PRODUCTION_ARN_SECRET: ${{ secrets.AWS_ROLE_PRODUCTION_ARN || '' }}
           REPO_VARS_JSON: ${{ toJson(vars) }}
@@ -165,6 +167,20 @@ jobs:
           values = {
             "AWS_ROLE_SANDBOX_ARN": first_non_empty(
               os.environ.get("AWS_ROLE_SANDBOX_ARN_OVERRIDE"),
+              os.environ.get("AWS_ROLE_SANDBOX_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_SANDBOX_ARN"),
+            ),
+            "AWS_ROLE_SANDBOX_APPLY_ARN": first_non_empty(
+              os.environ.get("AWS_ROLE_SANDBOX_ARN_OVERRIDE"),
+              os.environ.get("AWS_ROLE_SANDBOX_APPLY_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_SANDBOX_APPLY_ARN"),
+              os.environ.get("AWS_ROLE_SANDBOX_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_SANDBOX_ARN"),
+            ),
+            "AWS_ROLE_SANDBOX_DESTROY_ARN": first_non_empty(
+              os.environ.get("AWS_ROLE_SANDBOX_ARN_OVERRIDE"),
+              os.environ.get("AWS_ROLE_SANDBOX_DESTROY_ARN_SECRET"),
+              repo_vars.get("AWS_ROLE_SANDBOX_DESTROY_ARN"),
               os.environ.get("AWS_ROLE_SANDBOX_ARN_SECRET"),
               repo_vars.get("AWS_ROLE_SANDBOX_ARN"),
             ),
@@ -260,6 +276,8 @@ jobs:
             --sandbox-node-max-size "$SANDBOX_NODE_MAX_SIZE" \
             --sandbox-node-desired-size "$SANDBOX_NODE_DESIRED_SIZE" \
             --role-sandbox-arn "$AWS_ROLE_SANDBOX_ARN" \
+            --role-sandbox-apply-arn "$AWS_ROLE_SANDBOX_APPLY_ARN" \
+            --role-sandbox-destroy-arn "$AWS_ROLE_SANDBOX_DESTROY_ARN" \
             --role-staging-arn "$AWS_ROLE_STAGING_ARN" \
             --role-production-arn "$AWS_ROLE_PRODUCTION_ARN"
 
