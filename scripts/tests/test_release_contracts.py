@@ -515,6 +515,41 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
                 self.assertEqual(permissions["pull-requests"], "write")
 
 
+class SandboxPolicyContractTest(unittest.TestCase):
+    def test_trusted_label_resolution_reads_live_pr_labels(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-policy.yml")
+
+        script = extract_step(workflow, "evaluate", "Resolve trusted governance labels")["with"]["script"]
+        self.assertIn("github.rest.pulls.get", script)
+        self.assertIn("Unable to resolve live PR labels", script)
+        self.assertIn("const presentLabels = new Set((pr.labels || []).map(l => l.name));", script)
+
+
+class HelmChartContractTest(unittest.TestCase):
+    def test_all_private_image_workloads_use_global_image_pull_secrets(self) -> None:
+        workloads = [
+            "backend-deployment.yaml",
+            "frontend-deployment.yaml",
+            "migration-job.yaml",
+            "nginx.yaml",
+            "worker-deployment.yaml",
+        ]
+
+        for workload in workloads:
+            with self.subTest(workload=workload):
+                template = (REPO_ROOT / f"deploy/helm/face-detector/templates/{workload}").read_text(encoding="utf-8")
+                self.assertIn("{{- with .Values.imagePullSecrets }}", template)
+                self.assertIn("imagePullSecrets:", template)
+
+    def test_nginx_routes_public_health_to_backend(self) -> None:
+        template = (REPO_ROOT / "deploy/helm/face-detector/templates/nginx.yaml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("location = /health", template)
+        self.assertIn("proxy_pass http://backend_upstream/health;", template)
+
+
 class ReusableAppReleaseContractTest(unittest.TestCase):
     def test_reusable_app_release_resolve_step_writes_expected_publish_artifacts(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/reusable-app-release.yml")

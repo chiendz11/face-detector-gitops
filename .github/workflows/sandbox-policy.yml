@@ -81,7 +81,18 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const pr = context.payload.pull_request || {};
+            const payloadPr = context.payload.pull_request || {};
+            let pr = payloadPr;
+            try {
+              const response = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+              });
+              pr = response.data;
+            } catch (error) {
+              core.info(`Unable to resolve live PR labels; falling back to event payload: ${error.message}`);
+            }
             const presentLabels = new Set((pr.labels || []).map(l => l.name));
             const repoOwner = context.repo.owner;
             const botUsers = new Set(['github-actions[bot]', 'dependabot[bot]']);
