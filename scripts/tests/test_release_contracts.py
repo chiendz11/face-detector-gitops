@@ -624,6 +624,10 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn("github_oidc_sandbox_split_policy_documents", main_tf)
         self.assertIn("DenyPlatformRoleMutation", main_tf)
         self.assertIn("DenyStateBucketControlPlaneMutation", main_tf)
+        self.assertIn("SandboxOIDCExecutionRoleRead", main_tf)
+        self.assertIn("sandbox_split_role_arns", main_tf)
+        self.assertIn('"iam:GetRole"', main_tf)
+        self.assertIn('"dynamodb:PutItem"', main_tf)
         self.assertIn("github_oidc_sandbox_split_default_subjects", main_tf)
         self.assertIn("terraform-plan-reusable.yml", main_tf)
         self.assertIn("infrastructure.yml", main_tf)
@@ -679,6 +683,15 @@ class WorkflowRoleSplitContractTest(unittest.TestCase):
                 for expected in expected_strings:
                     self.assertIn(expected, workflow_text)
                 self.assertIn("repo_vars.get(\"AWS_ROLE_SANDBOX_ARN\")", workflow_text)
+
+    def test_infrastructure_failure_diagnostics_do_not_mask_pre_cluster_failures(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/infrastructure.yml")
+
+        diagnostics = extract_step(workflow, "infrastructure", "Dump sandbox ArgoCD diagnostics on failure")
+        diagnostics_script = diagnostics["run"]
+        self.assertIn("aws eks describe-cluster", diagnostics_script)
+        self.assertIn("does not exist yet. Skipping ArgoCD diagnostics.", diagnostics_script)
+        self.assertIn("Could not update kubeconfig", diagnostics_script)
 
     def _resolve_context(self, *extra_args: str) -> dict[str, str]:
         command = [

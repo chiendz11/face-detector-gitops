@@ -470,7 +470,15 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
           CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
         run: |
-          aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME" --alias "$CLUSTER_NAME"
+          if ! aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" >/dev/null 2>&1; then
+            echo "Cluster $CLUSTER_NAME does not exist yet. Skipping ArgoCD diagnostics."
+            exit 0
+          fi
+
+          if ! aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME" --alias "$CLUSTER_NAME"; then
+            echo "Could not update kubeconfig for $CLUSTER_NAME. Skipping ArgoCD diagnostics."
+            exit 0
+          fi
 
           echo "===== helm status argocd ====="
           helm status argocd -n argocd || true
