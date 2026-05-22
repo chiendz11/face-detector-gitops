@@ -259,7 +259,7 @@ The active workflows are:
 - `GitOps Production Promotion`: when a GitHub Release is published, resolves the release commit SHA and commits it into `values-production.yaml`
 - `Sandbox Auto Apply`: the developer-facing `pull_request_target` parent that gates on draft state, deploy label, and quota before calling the reusable infrastructure and bootstrap workflows from the default branch
 - `Sandbox Auto Destroy`: the developer-facing `pull_request_target` parent that tears down `sandbox-active` PR sandboxes on close, convert-to-draft, or final deploy-label removal
-- `Sandbox Janitor`: TTL and nightly cleanup for `sandbox-active` PR sandboxes using the same reusable infrastructure destroy workflow
+- `Sandbox Janitor`: TTL and nightly cleanup for `sandbox-active` PR sandboxes by dispatching the default-branch `Infrastructure Management` destroy workflow
 - `Sandbox DevOps Verify`: the privileged manual-dispatch lane for `devops/*` branches; the parent workflow can evolve on `devops/*`, but it calls the child infrastructure and bootstrap workflows pinned to the default branch so the AWS trust decision stays anchored on the approved workflow definition
 - `ArgoCD Bootstrap`: reusable bootstrap workflow plus manual rescue entry point for shared environments and sandbox admin recovery
 - `Infrastructure Management`: reusable infrastructure workflow plus manual rescue entry point for sandbox, staging, and production

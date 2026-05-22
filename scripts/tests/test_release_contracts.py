@@ -549,6 +549,72 @@ class SandboxDestroyContractTest(unittest.TestCase):
         self.assertIn("action: 'destroy'", dispatch_script)
 
 
+class SandboxJanitorContractTest(unittest.TestCase):
+    def test_janitor_uses_default_branch_destroy_dispatch_for_stale_sandboxes(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-janitor.yml")
+
+        select_job = workflow["jobs"]["select-candidates"]
+        self.assertEqual(select_job["permissions"]["issues"], "read")
+        self.assertEqual(select_job["permissions"]["pull-requests"], "read")
+
+        select_script = extract_step(workflow, "select-candidates", "Select expired sandbox environments")["with"][
+            "script"
+        ]
+        self.assertIn("state: 'all'", select_script)
+        self.assertIn("github.rest.issues.listComments", select_script)
+        self.assertIn("github.rest.issues.listEvents", select_script)
+        self.assertIn("teardown-sandbox", select_script)
+        self.assertIn("teardownLabelTrusted", select_script)
+        self.assertIn("context.payload.repository.owner.login", select_script)
+        self.assertIn("Ignoring untrusted teardown-sandbox label", select_script)
+        self.assertIn("closed_pr_with_active_sandbox", select_script)
+        self.assertIn("explicit_teardown_label", select_script)
+        self.assertIn("draft_pr_with_active_sandbox", select_script)
+        self.assertIn("ttl_expired_", select_script)
+
+        destroy_job = workflow["jobs"]["destroy-candidates"]
+        self.assertEqual(destroy_job["permissions"], {"actions": "write", "contents": "read"})
+
+        dispatch_script = extract_step(workflow, "destroy-candidates", "Dispatch sandbox destroy workflow")["with"][
+            "script"
+        ]
+        self.assertIn("github.rest.actions.createWorkflowDispatch", dispatch_script)
+        self.assertIn("workflow_id: 'infrastructure.yml'", dispatch_script)
+        self.assertIn("ref: context.payload.repository.default_branch", dispatch_script)
+        self.assertIn("action: 'destroy'", dispatch_script)
+
+
+class GitHubOidcTrustContractTest(unittest.TestCase):
+    def test_sandbox_trust_policy_allows_only_default_branch_destroy_workflow(self) -> None:
+        policy = json.loads((REPO_ROOT / "aws/github-oidc-trust-policy-sandbox.json").read_text(encoding="utf-8"))
+        subjects = policy["Statement"][0]["Condition"]["StringLike"]["token.actions.githubusercontent.com:sub"]
+
+        self.assertIn(
+            "repo:${GITHUB_OWNER}/${GITHUB_REPO}:ref:refs/heads/master:"
+            "job_workflow_ref:${GITHUB_OWNER}/${GITHUB_REPO}/.github/workflows/infrastructure.yml@refs/heads/master",
+            subjects,
+        )
+        self.assertNotIn(
+            "repo:${GITHUB_OWNER}/${GITHUB_REPO}:ref:refs/heads/*:"
+            "job_workflow_ref:${GITHUB_OWNER}/${GITHUB_REPO}/.github/workflows/infrastructure.yml@refs/heads/master",
+            subjects,
+        )
+
+    def test_bootstrap_can_adopt_sandbox_oidc_role_trust_policy(self) -> None:
+        main_tf = (REPO_ROOT / "terraform/bootstrap/main.tf").read_text(encoding="utf-8")
+        variables_tf = (REPO_ROOT / "terraform/bootstrap/variables.tf").read_text(encoding="utf-8")
+
+        self.assertIn('resource "aws_iam_role" "github_oidc_sandbox"', main_tf)
+        self.assertIn("manage_github_oidc_sandbox_role", main_tf)
+        self.assertIn("sts:AssumeRoleWithWebIdentity", main_tf)
+        self.assertIn(
+            "ref:refs/heads/${var.github_oidc_default_branch}:job_workflow_ref",
+            main_tf,
+        )
+        self.assertIn('variable "manage_github_oidc_sandbox_role"', variables_tf)
+        self.assertIn("default     = false", variables_tf)
+
+
 class HelmChartContractTest(unittest.TestCase):
     def test_all_private_image_workloads_use_global_image_pull_secrets(self) -> None:
         workloads = [

@@ -31,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: read
       pull-requests: read
     outputs:
       candidates: ${{ steps.collect.outputs.candidates }}
@@ -46,6 +47,7 @@ jobs:
         with:
           script: |
             const activeLabel = 'sandbox-active';
+            const teardownLabel = 'teardown-sandbox';
             const marker = '<!-- sandbox-lifecycle-status -->';
             const mode = process.env.JANITOR_MODE;
             const repoVars = JSON.parse(process.env.REPO_VARS_JSON || '{}');
@@ -63,7 +65,7 @@ jobs:
             const pulls = await github.paginate(github.rest.pulls.list, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'open',
+              state: 'all',
               per_page: 100,
             });
 
@@ -87,31 +89,73 @@ jobs:
             const selected = [];
 
             for (const pull of candidates) {
+              const labels = pull.labels.map((label) => label.name);
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pull.number,
+                per_page: 100,
+              });
+
+              const lifecycleComment = comments
+                .filter((comment) => comment.user.type === 'Bot' && comment.body.includes(marker))
+                .sort((left, right) => Date.parse(left.updated_at) - Date.parse(right.updated_at))
+                .pop();
+
+              const events = await github.paginate(github.rest.issues.listEvents, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pull.number,
+                per_page: 100,
+              });
+              const activeLabelEvent = events
+                .filter((event) => event.event === 'labeled' && event.label?.name === activeLabel)
+                .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at))
+                .pop();
+              const teardownLabelEvent = events
+                .filter((event) => event.event === 'labeled' && event.label?.name === teardownLabel)
+                .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at))
+                .pop();
+              const teardownLabelTrusted =
+                labels.includes(teardownLabel) &&
+                teardownLabelEvent?.actor?.login === context.payload.repository.owner.login &&
+                teardownLabelEvent?.actor?.type !== 'Bot';
+
+              const appliedAt = lifecycleComment?.updated_at || activeLabelEvent?.created_at || pull.updated_at || pull.created_at;
+              const ageHours = (now - Date.parse(appliedAt)) / 36e5;
+              let reason = '';
+
+              if (pull.state !== 'open') {
+                reason = 'closed_pr_with_active_sandbox';
+              } else if (teardownLabelTrusted) {
+                reason = 'explicit_teardown_label';
+              } else if (mode === 'nightly') {
+                reason = 'nightly_cleanup';
+              } else if (pull.draft) {
+                reason = 'draft_pr_with_active_sandbox';
+              } else if (ageHours >= ttlHours) {
+                reason = `ttl_expired_${ageHours.toFixed(1)}h`;
+              }
+
               if (mode === 'ttl') {
-                const comments = await github.paginate(github.rest.issues.listComments, {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: pull.number,
-                  per_page: 100,
-                });
-
-                const lifecycleComment = comments.find((comment) =>
-                  comment.user.type === 'Bot' && comment.body.includes(marker)
-                );
-
-                const appliedAt = lifecycleComment?.updated_at || pull.created_at;
-                const ageHours = (now - Date.parse(appliedAt)) / 36e5;
-                if (!pull.draft && ageHours < ttlHours) {
+                if (!reason) {
+                  if (labels.includes(teardownLabel) && !teardownLabelTrusted) {
+                    core.warning(`Ignoring untrusted teardown-sandbox label on PR #${pull.number}; latest label actor was ${teardownLabelEvent?.actor?.login || '(unknown)'}.`);
+                  }
                   core.info(`Skipping PR #${pull.number}; sandbox age ${ageHours.toFixed(1)}h is below the TTL.`);
                   continue;
                 }
+              } else if (!reason) {
+                reason = 'nightly_cleanup';
               }
 
+              core.info(`Selecting PR #${pull.number} for sandbox janitor destroy: ${reason}.`);
               selected.push({
                 pull_request_number: String(pull.number),
                 source_ref_name: pull.head.ref,
                 source_git_sha: pull.head.sha,
                 owner_login: pull.user.login,
+                reason,
               });
             }
 
@@ -122,21 +166,36 @@ jobs:
   destroy-candidates:
     needs: select-candidates
     if: needs.select-candidates.outputs.candidate_count != '0'
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.select-candidates.outputs.candidates) }}
     permissions:
+      actions: write
       contents: read
-      id-token: write
-      issues: write
-      pull-requests: write
-    uses: ./.github/workflows/infrastructure.yml
-    with:
-      environment: sandbox
-      action: destroy
-      pull_request_number: ${{ matrix.pull_request_number }}
-      source_ref_name: ${{ matrix.source_ref_name }}
-      source_git_sha: ${{ matrix.source_git_sha }}
-      owner_login: ${{ matrix.owner_login }}
-    secrets: inherit
+    steps:
+      - name: Dispatch sandbox destroy workflow
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PR_NUMBER: ${{ matrix.pull_request_number }}
+          SOURCE_REF_NAME: ${{ matrix.source_ref_name }}
+          SOURCE_GIT_SHA: ${{ matrix.source_git_sha }}
+          REASON: ${{ matrix.reason }}
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'infrastructure.yml',
+              ref: context.payload.repository.default_branch,
+              inputs: {
+                environment: 'sandbox',
+                action: 'destroy',
+                pull_request_number: process.env.PR_NUMBER,
+                source_ref_name: process.env.SOURCE_REF_NAME,
+                source_git_sha: process.env.SOURCE_GIT_SHA,
+              },
+            });
+
+            core.info(`Dispatched sandbox janitor destroy for PR #${process.env.PR_NUMBER}. Reason: ${process.env.REASON}`);
