@@ -529,11 +529,14 @@ class SandboxDestroyContractTest(unittest.TestCase):
     def test_destroy_gate_reads_live_labels_and_logs_decision(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-auto-destroy.yml")
 
+        self.assertIn("labeled", workflow["on"]["pull_request_target"]["types"])
         script = extract_step(workflow, "evaluate-destroy", "Evaluate sandbox destroy policy")["with"]["script"]
         self.assertIn("github.rest.pulls.get", script)
         self.assertIn("Unable to resolve live PR labels", script)
         self.assertIn("const trustedActor = context.actor === context.payload.repository.owner.login;", script)
         self.assertIn("const removedLastDeployLabel", script)
+        self.assertIn("const explicitTeardownRequested", script)
+        self.assertIn("teardown-sandbox", script)
         self.assertIn("Sandbox destroy decision: should_destroy=", script)
 
 
