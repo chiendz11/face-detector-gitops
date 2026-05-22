@@ -395,6 +395,9 @@ jobs:
           TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
           TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
+          TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
+          TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
+          TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
@@ -456,6 +459,9 @@ jobs:
           TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
           TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
+          TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
+          TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
+          TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
         run: terraform apply -auto-approve -input=false
 
       - name: Dump sandbox ArgoCD diagnostics on failure
@@ -699,6 +705,9 @@ jobs:
           TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
           TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
+          TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
+          TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
+          TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
         run: terraform destroy -auto-approve -input=false
 
       - name: Cleanup sandbox AWS orphans after destroy
@@ -733,6 +742,9 @@ jobs:
           TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
           TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
+          TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
+          TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
+          TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
         run: terraform destroy -auto-approve -input=false
 
       - name: Fail if Terraform destroy did not complete

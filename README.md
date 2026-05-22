@@ -223,6 +223,8 @@ Required GitHub secrets for GitHub OIDC role assumption:
 - `AWS_ROLE_STAGING_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
 - `AWS_ROLE_PRODUCTION_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
 
+The task-scoped sandbox ARNs should be enabled only after `terraform/bootstrap` has attached the split permission policies and the EKS module can grant sandbox cluster access to the scoped roles. The intended migration is: create/adopt the split roles, attach policies from bootstrap Terraform, merge the workflow/EKS access change, then set the four scoped role secrets and run a sandbox PR end-to-end.
+
 If `STAGING_BACKEND_ENV_FILE` or `PRODUCTION_BACKEND_ENV_FILE` is not set, `ArgoCD Bootstrap` falls back to the committed template under `deploy/runtime/`. For real staging or production deployments, prefer the secret-backed env file so runtime values do not live in Git.
 
 When `SANDBOX_BACKEND_ENV_FILE` is not set, sandbox plan/apply/bootstrap runs fall back to the staging runtime contract and then rewrite infrastructure endpoints from the sandbox Terraform outputs.

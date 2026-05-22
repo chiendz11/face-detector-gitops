@@ -619,15 +619,33 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         variables_tf = (REPO_ROOT / "terraform/bootstrap/variables.tf").read_text(encoding="utf-8")
 
         self.assertIn('resource "aws_iam_role" "github_oidc_sandbox_split"', main_tf)
+        self.assertIn('resource "aws_iam_policy" "github_oidc_sandbox_split"', main_tf)
+        self.assertIn('resource "aws_iam_role_policy_attachment" "github_oidc_sandbox_split"', main_tf)
+        self.assertIn("github_oidc_sandbox_split_policy_documents", main_tf)
+        self.assertIn("DenyPlatformRoleMutation", main_tf)
+        self.assertIn("DenyStateBucketControlPlaneMutation", main_tf)
         self.assertIn("github_oidc_sandbox_split_default_subjects", main_tf)
         self.assertIn("terraform-plan-reusable.yml", main_tf)
         self.assertIn("infrastructure.yml", main_tf)
         self.assertIn("app-cd.yml", main_tf)
         self.assertIn('variable "manage_github_oidc_sandbox_split_roles"', variables_tf)
+        self.assertIn('variable "attach_github_oidc_sandbox_split_policies"', variables_tf)
         self.assertIn('"Role-Sandbox-Plan"', variables_tf)
         self.assertIn('"Role-Sandbox-Apply"', variables_tf)
         self.assertIn('"Role-Sandbox-Destroy"', variables_tf)
         self.assertIn('"Role-Sandbox-AppDeploy"', variables_tf)
+
+    def test_eks_grants_access_to_task_scoped_sandbox_roles(self) -> None:
+        main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
+        variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
+
+        self.assertIn("sandbox_cluster_access_entries", main_tf)
+        self.assertIn("access_entries", main_tf)
+        self.assertIn("AmazonEKSViewPolicy", main_tf)
+        self.assertIn("AmazonEKSClusterAdminPolicy", main_tf)
+        self.assertIn('variable "sandbox_plan_role_arn"', variables_tf)
+        self.assertIn('variable "sandbox_appdeploy_role_arn"', variables_tf)
+        self.assertIn('variable "sandbox_destroy_role_arn"', variables_tf)
 
 
 class WorkflowRoleSplitContractTest(unittest.TestCase):
@@ -636,12 +654,18 @@ class WorkflowRoleSplitContractTest(unittest.TestCase):
             ".github/workflows/terraform-plan-reusable.yml": [
                 "AWS_ROLE_SANDBOX_PLAN_ARN",
                 "--role-sandbox-plan-arn",
+                "TF_VAR_sandbox_plan_role_arn",
+                "TF_VAR_sandbox_appdeploy_role_arn",
+                "TF_VAR_sandbox_destroy_role_arn",
             ],
             ".github/workflows/infrastructure.yml": [
                 "AWS_ROLE_SANDBOX_APPLY_ARN",
                 "AWS_ROLE_SANDBOX_DESTROY_ARN",
                 "--role-sandbox-apply-arn",
                 "--role-sandbox-destroy-arn",
+                "TF_VAR_sandbox_plan_role_arn",
+                "TF_VAR_sandbox_appdeploy_role_arn",
+                "TF_VAR_sandbox_destroy_role_arn",
             ],
             ".github/workflows/app-cd.yml": [
                 "AWS_ROLE_SANDBOX_APPDEPLOY_ARN",
