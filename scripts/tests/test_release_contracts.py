@@ -539,6 +539,15 @@ class SandboxDestroyContractTest(unittest.TestCase):
         self.assertIn("teardown-sandbox", script)
         self.assertIn("Sandbox destroy decision: should_destroy=", script)
 
+        destroy_job = workflow["jobs"]["destroy-sandbox"]
+        self.assertEqual(destroy_job["permissions"]["actions"], "write")
+        dispatch_script = extract_step(workflow, "destroy-sandbox", "Dispatch sandbox destroy workflow")["with"][
+            "script"
+        ]
+        self.assertIn("github.rest.actions.createWorkflowDispatch", dispatch_script)
+        self.assertIn("workflow_id: 'infrastructure.yml'", dispatch_script)
+        self.assertIn("action: 'destroy'", dispatch_script)
+
 
 class HelmChartContractTest(unittest.TestCase):
     def test_all_private_image_workloads_use_global_image_pull_secrets(self) -> None:

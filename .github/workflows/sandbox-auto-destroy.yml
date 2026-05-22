@@ -95,17 +95,31 @@ jobs:
   destroy-sandbox:
     needs: evaluate-destroy
     if: needs.evaluate-destroy.outputs.should_destroy == 'true'
+    runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: read
-      id-token: write
-      issues: write
-      pull-requests: write
-    uses: ./.github/workflows/infrastructure.yml
-    with:
-      environment: sandbox
-      action: destroy
-      pull_request_number: ${{ needs.evaluate-destroy.outputs.pr_number }}
-      source_ref_name: ${{ needs.evaluate-destroy.outputs.source_ref_name }}
-      source_git_sha: ${{ needs.evaluate-destroy.outputs.source_git_sha }}
-      owner_login: ${{ needs.evaluate-destroy.outputs.owner_login }}
-    secrets: inherit
+    steps:
+      - name: Dispatch sandbox destroy workflow
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PR_NUMBER: ${{ needs.evaluate-destroy.outputs.pr_number }}
+          SOURCE_REF_NAME: ${{ needs.evaluate-destroy.outputs.source_ref_name }}
+          SOURCE_GIT_SHA: ${{ needs.evaluate-destroy.outputs.source_git_sha }}
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'infrastructure.yml',
+              ref: context.payload.repository.default_branch,
+              inputs: {
+                environment: 'sandbox',
+                action: 'destroy',
+                pull_request_number: process.env.PR_NUMBER,
+                source_ref_name: process.env.SOURCE_REF_NAME,
+                source_git_sha: process.env.SOURCE_GIT_SHA,
+              },
+            });
+
+            core.info(`Dispatched infrastructure destroy for PR #${process.env.PR_NUMBER} at ${process.env.SOURCE_GIT_SHA}`);
