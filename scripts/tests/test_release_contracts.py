@@ -525,6 +525,18 @@ class SandboxPolicyContractTest(unittest.TestCase):
         self.assertIn("const presentLabels = new Set((pr.labels || []).map(l => l.name));", script)
 
 
+class SandboxDestroyContractTest(unittest.TestCase):
+    def test_destroy_gate_reads_live_labels_and_logs_decision(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-auto-destroy.yml")
+
+        script = extract_step(workflow, "evaluate-destroy", "Evaluate sandbox destroy policy")["with"]["script"]
+        self.assertIn("github.rest.pulls.get", script)
+        self.assertIn("Unable to resolve live PR labels", script)
+        self.assertIn("const trustedActor = context.actor === context.payload.repository.owner.login;", script)
+        self.assertIn("const removedLastDeployLabel", script)
+        self.assertIn("Sandbox destroy decision: should_destroy=", script)
+
+
 class HelmChartContractTest(unittest.TestCase):
     def test_all_private_image_workloads_use_global_image_pull_secrets(self) -> None:
         workloads = [

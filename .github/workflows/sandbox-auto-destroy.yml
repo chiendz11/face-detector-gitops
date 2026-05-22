@@ -35,19 +35,37 @@ jobs:
         with:
           script: |
             const pr = context.payload.pull_request;
-            const labels = pr.labels.map((label) => label.name);
+            const payloadLabels = (pr.labels || []).map((label) => label.name);
+            let labels = payloadLabels;
+
+            try {
+              const { data: livePr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+              });
+              labels = (livePr.labels || []).map((label) => label.name);
+              core.info(`Resolved live PR labels: ${labels.join(', ') || '(none)'}`);
+            } catch (error) {
+              core.warning(`Unable to resolve live PR labels; falling back to event payload: ${error.message}`);
+            }
+
             const sameRepo = pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            const trustedActor = context.actor === context.payload.repository.owner.login;
             const hasActiveSandbox = labels.includes('sandbox-active');
             const deployLabels = ['deploy-sandbox', 'deploy-preview'];
+            const removedLabel = context.payload.label?.name || '';
+            const hasDeployLabel = deployLabels.some((label) => labels.includes(label));
             const removedLastDeployLabel =
               context.payload.action === 'unlabeled' &&
-              deployLabels.includes(context.payload.label?.name || '') &&
-              !deployLabels.some((label) => labels.includes(label));
-            const shouldDestroy = sameRepo && hasActiveSandbox && (
+              deployLabels.includes(removedLabel) &&
+              !hasDeployLabel;
+            const lifecycleRequested = (
               context.payload.action === 'closed' ||
               context.payload.action === 'converted_to_draft' ||
               removedLastDeployLabel
             );
+            const shouldDestroy = sameRepo && trustedActor && hasActiveSandbox && lifecycleRequested;
 
             core.setOutput('should_destroy', shouldDestroy ? 'true' : 'false');
             core.setOutput('pr_number', String(pr.number));
@@ -55,10 +73,16 @@ jobs:
             core.setOutput('source_git_sha', pr.head.sha);
             core.setOutput('owner_login', pr.user.login);
 
+            core.info(`Sandbox destroy decision: should_destroy=${shouldDestroy}, action=${context.payload.action}, actor=${context.actor}, trusted_actor=${trustedActor}, same_repo=${sameRepo}, has_active_sandbox=${hasActiveSandbox}, removed_label=${removedLabel || '(none)'}, has_deploy_label=${hasDeployLabel}, removed_last_deploy_label=${removedLastDeployLabel}`);
+
             if (!sameRepo) {
               core.info('Skipping sandbox destroy for forked pull requests.');
+            } else if (!trustedActor) {
+              core.info('Skipping sandbox destroy because the event actor is not the repository owner.');
             } else if (!hasActiveSandbox) {
               core.info('Skipping sandbox destroy because the PR is not marked sandbox-active.');
+            } else if (!lifecycleRequested) {
+              core.info('Skipping sandbox destroy because no trusted sandbox destroy lifecycle event was detected.');
             }
 
   destroy-sandbox:
