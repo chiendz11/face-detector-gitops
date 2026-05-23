@@ -500,6 +500,15 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
         self.assertNotIn(". ./.env.runtime", smoke_step["run"])
         self.assertNotIn("set -a", smoke_step["run"])
 
+    def test_bootstrap_waits_for_public_dns_and_health_before_smoke(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/app-cd.yml")
+
+        readiness_script = extract_run_step(workflow, "bootstrap", "Wait for public app readiness")
+        self.assertIn("getent hosts", readiness_script)
+        self.assertIn("/health", readiness_script)
+        self.assertIn("curl --fail", readiness_script)
+        self.assertIn("Timed out waiting for public app readiness", readiness_script)
+
     def test_sandbox_auto_apply_allows_package_publish_for_bootstrap(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-auto-apply.yml")
         permissions = workflow["jobs"]["bootstrap-sandbox"]["permissions"]
