@@ -651,6 +651,44 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn('"Role-Sandbox-Destroy"', variables_tf)
         self.assertIn('"Role-Sandbox-AppDeploy"', variables_tf)
 
+    def test_bootstrap_workflow_uses_owner_approval_and_bootstrap_role_only(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/terraform-bootstrap-apply.yml")
+        workflow_text = (REPO_ROOT / ".github/workflows/terraform-bootstrap-apply.yml").read_text(encoding="utf-8")
+
+        self.assertIn("workflow_dispatch", workflow["on"])
+        self.assertEqual(workflow["permissions"], {"contents": "read", "id-token": "write"})
+
+        bootstrap = workflow["jobs"]["bootstrap"]
+        self.assertEqual(bootstrap["if"], "github.actor == github.repository_owner")
+        self.assertEqual(bootstrap["environment"], "bootstrap")
+
+        self.assertIn("AWS_ROLE_BOOTSTRAP_ARN", workflow_text)
+        self.assertNotIn("AWS_ROLE_SANDBOX_ARN", workflow_text)
+        self.assertIn("confirm_apply", workflow_text)
+        self.assertIn("apply-bootstrap", workflow_text)
+        self.assertIn("terraform/bootstrap", workflow_text)
+        self.assertIn("github.event.repository.default_branch", workflow_text)
+        self.assertIn("terraform apply -auto-approve tfplan", workflow_text)
+
+    def test_bootstrap_terraform_manages_approved_bootstrap_role(self) -> None:
+        main_tf = (REPO_ROOT / "terraform/bootstrap/main.tf").read_text(encoding="utf-8")
+        variables_tf = (REPO_ROOT / "terraform/bootstrap/variables.tf").read_text(encoding="utf-8")
+        outputs_tf = (REPO_ROOT / "terraform/bootstrap/outputs.tf").read_text(encoding="utf-8")
+
+        self.assertIn('backend "s3"', main_tf)
+        self.assertIn('key = "bootstrap/terraform.tfstate"', main_tf)
+        self.assertIn('resource "aws_iam_role" "github_oidc_bootstrap"', main_tf)
+        self.assertIn('resource "aws_iam_policy" "github_oidc_bootstrap"', main_tf)
+        self.assertIn('resource "aws_iam_role_policy_attachment" "github_oidc_bootstrap"', main_tf)
+        self.assertIn("terraform-bootstrap-apply.yml", main_tf)
+        self.assertIn("BootstrapTerraformStateBackend", main_tf)
+        self.assertIn("BootstrapManagedIAM", main_tf)
+        self.assertIn("DenyNonBootstrapEnvironmentRoleMutation", main_tf)
+        self.assertIn('"Role-Bootstrap"', variables_tf)
+        self.assertIn('variable "manage_github_oidc_bootstrap_role"', variables_tf)
+        self.assertIn('variable "attach_github_oidc_bootstrap_policy"', variables_tf)
+        self.assertIn("github_oidc_bootstrap_role_arn", outputs_tf)
+
     def test_eks_grants_access_to_task_scoped_sandbox_roles(self) -> None:
         main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
         variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
