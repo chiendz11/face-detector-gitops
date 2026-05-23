@@ -681,6 +681,7 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn('resource "aws_iam_policy" "github_oidc_bootstrap"', main_tf)
         self.assertIn('resource "aws_iam_role_policy_attachment" "github_oidc_bootstrap"', main_tf)
         self.assertIn("terraform-bootstrap-apply.yml", main_tf)
+        self.assertIn("environment:bootstrap:job_workflow_ref", main_tf)
         self.assertIn("BootstrapTerraformStateBackend", main_tf)
         self.assertIn("BootstrapManagedIAM", main_tf)
         self.assertIn("DenyNonBootstrapEnvironmentRoleMutation", main_tf)
