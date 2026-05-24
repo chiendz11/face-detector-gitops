@@ -62,15 +62,31 @@ jobs:
           mkdir -p .artifacts/helm
           helm template face-detector deploy/helm/face-detector \
             --set backend.image.repository=ghcr.io/example/face-detector-backend \
+            --set backend.image.tag=test-render \
+            --set backend.image.digest=sha256:1111111111111111111111111111111111111111111111111111111111111111 \
             --set worker.image.repository=ghcr.io/example/face-detector-backend \
+            --set worker.image.tag=test-render \
+            --set worker.image.digest=sha256:1111111111111111111111111111111111111111111111111111111111111111 \
             --set frontendAdmin.image.repository=ghcr.io/example/face-detector-admin \
+            --set frontendAdmin.image.tag=test-render \
+            --set frontendAdmin.image.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222 \
             --set nginx.image.repository=ghcr.io/example/face-detector-nginx \
+            --set nginx.image.tag=test-render \
+            --set nginx.image.digest=sha256:3333333333333333333333333333333333333333333333333333333333333333 \
             -f deploy/helm/face-detector/values-staging.yaml > .artifacts/helm/staging.yaml
           helm template face-detector deploy/helm/face-detector \
             --set backend.image.repository=ghcr.io/example/face-detector-backend \
+            --set backend.image.tag=test-render \
+            --set backend.image.digest=sha256:1111111111111111111111111111111111111111111111111111111111111111 \
             --set worker.image.repository=ghcr.io/example/face-detector-backend \
+            --set worker.image.tag=test-render \
+            --set worker.image.digest=sha256:1111111111111111111111111111111111111111111111111111111111111111 \
             --set frontendAdmin.image.repository=ghcr.io/example/face-detector-admin \
+            --set frontendAdmin.image.tag=test-render \
+            --set frontendAdmin.image.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222 \
             --set nginx.image.repository=ghcr.io/example/face-detector-nginx \
+            --set nginx.image.tag=test-render \
+            --set nginx.image.digest=sha256:3333333333333333333333333333333333333333333333333333333333333333 \
             -f deploy/helm/face-detector/values-production.yaml > .artifacts/helm/production.yaml
 
       - name: Set up kubeconform

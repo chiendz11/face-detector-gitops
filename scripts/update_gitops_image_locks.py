@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,6 +21,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def validate_image_tag(image_tag: str) -> str:
+    normalized = image_tag.strip()
+    if not normalized:
+        raise ValueError("image tag must not be empty")
+    if normalized == "latest":
+        raise ValueError("GitOps promotions must not use the mutable latest tag")
+    return normalized
+
+
+def validate_digest(digest: str, label: str) -> str:
+    normalized = digest.strip()
+    if not _DIGEST_RE.fullmatch(normalized):
+        raise ValueError(f"{label} must be an immutable sha256 digest")
+    return normalized
+
+
 def apply_image_locks(
     data: dict[str, Any] | None,
     image_tag: str,
@@ -25,17 +45,19 @@ def apply_image_locks(
     nginx_digest: str,
 ) -> dict[str, Any]:
     values = data or {}
+    normalized_tag = validate_image_tag(image_tag)
     component_digests = {
-        "backend": backend_digest,
-        "worker": backend_digest,
-        "frontendAdmin": frontend_digest,
-        "nginx": nginx_digest,
+        "backend": validate_digest(backend_digest, "backend digest"),
+        "worker": validate_digest(backend_digest, "worker digest"),
+        "frontendAdmin": validate_digest(frontend_digest, "frontend digest"),
+        "nginx": validate_digest(nginx_digest, "nginx digest"),
     }
 
     for component, digest in component_digests.items():
         image = values.setdefault(component, {}).setdefault("image", {})
-        image["tag"] = image_tag
+        image["tag"] = normalized_tag
         image["digest"] = digest
+        image["requireDigest"] = True
 
     return values
 

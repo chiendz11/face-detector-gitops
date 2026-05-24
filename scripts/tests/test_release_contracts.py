@@ -397,7 +397,8 @@ class GitOpsPromotionContractTest(unittest.TestCase):
 
     def test_gitops_staging_contract_runs_lock_mutation_in_dry_run(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/gitops-staging.yml")
-        self.assertEqual(workflow["on"]["workflow_run"]["workflows"], ["CI Pipeline"])
+        self.assertEqual(workflow["on"]["workflow_run"]["workflows"], ["App Release"])
+        self.assertIn("github.event.repository.default_branch", workflow["jobs"]["promote"]["if"])
         self.assertEqual(
             extract_run_step(workflow, "promote", "Commit staging promotion").splitlines()[0].strip(),
             'if git diff --quiet -- deploy/helm/face-detector/values-staging.yaml; then',
@@ -411,14 +412,19 @@ class GitOpsPromotionContractTest(unittest.TestCase):
 
         self.assertEqual(written["backend"]["image"]["tag"], "commit-sha")
         self.assertEqual(written["backend"]["image"]["digest"], "sha256:" + "1" * 64)
+        self.assertTrue(written["backend"]["image"]["requireDigest"])
         self.assertEqual(written["worker"]["image"]["digest"], "sha256:" + "1" * 64)
+        self.assertTrue(written["worker"]["image"]["requireDigest"])
         self.assertEqual(written["frontendAdmin"]["image"]["digest"], "sha256:" + "2" * 64)
+        self.assertTrue(written["frontendAdmin"]["image"]["requireDigest"])
         self.assertEqual(written["nginx"]["image"]["digest"], "sha256:" + "3" * 64)
+        self.assertTrue(written["nginx"]["image"]["requireDigest"])
         self.assertEqual(written["featureFlags"], {"demoMode": True})
 
     def test_gitops_production_contract_runs_lock_mutation_in_dry_run(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/gitops-production.yml")
         self.assertEqual(workflow["on"]["release"]["types"], ["published"])
+        self.assertEqual(workflow["jobs"]["promote"]["environment"], "production")
         self.assertIn('git rev-list -n 1 "$RELEASE_TAG"', extract_run_step(workflow, "promote", "Resolve release commit"))
 
         written = self._run_gitops_update_step(
@@ -429,10 +435,36 @@ class GitOpsPromotionContractTest(unittest.TestCase):
 
         self.assertEqual(written["backend"]["image"]["tag"], "commit-sha")
         self.assertEqual(written["backend"]["image"]["digest"], "sha256:" + "1" * 64)
+        self.assertTrue(written["backend"]["image"]["requireDigest"])
         self.assertEqual(written["worker"]["image"]["digest"], "sha256:" + "1" * 64)
+        self.assertTrue(written["worker"]["image"]["requireDigest"])
         self.assertEqual(written["frontendAdmin"]["image"]["digest"], "sha256:" + "2" * 64)
+        self.assertTrue(written["frontendAdmin"]["image"]["requireDigest"])
         self.assertEqual(written["nginx"]["image"]["digest"], "sha256:" + "3" * 64)
+        self.assertTrue(written["nginx"]["image"]["requireDigest"])
         self.assertEqual(written["featureFlags"], {"demoMode": True})
+
+    def test_shared_environment_values_require_immutable_digests(self) -> None:
+        for values_name in ("values-staging.yaml", "values-production.yaml"):
+            values = yaml.safe_load(
+                (REPO_ROOT / "deploy/helm/face-detector" / values_name).read_text(encoding="utf-8")
+            )
+            for component in ("backend", "worker", "frontendAdmin", "nginx"):
+                image = values[component]["image"]
+                self.assertEqual(image["tag"], "unpromoted")
+                self.assertEqual(image["digest"], "")
+                self.assertTrue(image["requireDigest"], msg=f"{values_name}:{component}")
+
+    def test_helm_digest_guard_and_ci_render_overrides_are_present(self) -> None:
+        helper = (REPO_ROOT / "deploy/helm/face-detector/templates/_helpers.tpl").read_text(encoding="utf-8")
+        infra_ci = (REPO_ROOT / ".github/workflows/reusable-infra-ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("image.requireDigest=true", helper)
+        self.assertIn("regexMatch \"^sha256:[0-9a-f]{64}$\"", helper)
+        self.assertIn("image.digest is required", helper)
+        self.assertIn("--set backend.image.digest=sha256:1111111111111111111111111111111111111111111111111111111111111111", infra_ci)
+        self.assertIn("--set frontendAdmin.image.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222", infra_ci)
+        self.assertIn("--set nginx.image.digest=sha256:3333333333333333333333333333333333333333333333333333333333333333", infra_ci)
 
 
 class AppCdSandboxBootstrapContractTest(unittest.TestCase):

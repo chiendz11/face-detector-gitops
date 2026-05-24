@@ -3,7 +3,7 @@ name: GitOps Staging Promotion
 on:
   workflow_run:
     workflows:
-      - CI Pipeline
+      - App Release
     types:
       - completed
 
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   promote:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == github.event.repository.default_branch
     runs-on: ubuntu-latest
     permissions:
       actions: read

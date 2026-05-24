@@ -29,13 +29,36 @@ class ApplyImageLocksTest(unittest.TestCase):
 
         self.assertEqual(updated["backend"]["image"]["tag"], "commit-sha")
         self.assertEqual(updated["backend"]["image"]["digest"], "sha256:" + "1" * 64)
+        self.assertTrue(updated["backend"]["image"]["requireDigest"])
         self.assertEqual(updated["worker"]["image"]["tag"], "commit-sha")
         self.assertEqual(updated["worker"]["image"]["digest"], "sha256:" + "1" * 64)
+        self.assertTrue(updated["worker"]["image"]["requireDigest"])
         self.assertEqual(updated["frontendAdmin"]["image"]["tag"], "commit-sha")
         self.assertEqual(updated["frontendAdmin"]["image"]["digest"], "sha256:" + "2" * 64)
+        self.assertTrue(updated["frontendAdmin"]["image"]["requireDigest"])
         self.assertEqual(updated["nginx"]["image"]["tag"], "commit-sha")
         self.assertEqual(updated["nginx"]["image"]["digest"], "sha256:" + "3" * 64)
+        self.assertTrue(updated["nginx"]["image"]["requireDigest"])
         self.assertEqual(updated["featureFlags"], {"demoMode": True})
+
+    def test_apply_image_locks_rejects_mutable_or_invalid_locks(self) -> None:
+        with self.assertRaisesRegex(ValueError, "latest"):
+            apply_image_locks(
+                {},
+                image_tag="latest",
+                backend_digest="sha256:" + "1" * 64,
+                frontend_digest="sha256:" + "2" * 64,
+                nginx_digest="sha256:" + "3" * 64,
+            )
+
+        with self.assertRaisesRegex(ValueError, "backend digest"):
+            apply_image_locks(
+                {},
+                image_tag="commit-sha",
+                backend_digest="",
+                frontend_digest="sha256:" + "2" * 64,
+                nginx_digest="sha256:" + "3" * 64,
+            )
 
 
 class UpdateValuesFileTest(unittest.TestCase):
@@ -57,6 +80,7 @@ class UpdateValuesFileTest(unittest.TestCase):
         self.assertEqual(written["backend"]["image"]["repository"], "ghcr.io/example/backend")
         self.assertEqual(written["backend"]["image"]["tag"], "release-sha")
         self.assertEqual(written["backend"]["image"]["digest"], "sha256:" + "a" * 64)
+        self.assertTrue(written["backend"]["image"]["requireDigest"])
         self.assertEqual(written["worker"]["image"]["digest"], "sha256:" + "a" * 64)
         self.assertEqual(written["frontendAdmin"]["image"]["digest"], "sha256:" + "b" * 64)
         self.assertEqual(written["nginx"]["image"]["digest"], "sha256:" + "c" * 64)

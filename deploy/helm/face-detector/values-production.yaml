@@ -1,8 +1,9 @@
 backend:
   replicaCount: 2
   image:
-    tag: latest
+    tag: unpromoted
     digest: ""
+    requireDigest: true
   autoscaling:
     enabled: true
     minReplicas: 2
@@ -12,8 +13,9 @@ backend:
 worker:
   replicaCount: 1
   image:
-    tag: latest
+    tag: unpromoted
     digest: ""
+    requireDigest: true
   autoscaling:
     keda:
       enabled: true
@@ -30,11 +32,13 @@ worker:
 
 frontendAdmin:
   image:
-    tag: latest
+    tag: unpromoted
     digest: ""
+    requireDigest: true
 
 nginx:
   replicaCount: 2
   image:
-    tag: latest
+    tag: unpromoted
     digest: ""
+    requireDigest: true

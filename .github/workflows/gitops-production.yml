@@ -15,6 +15,7 @@ concurrency:
 jobs:
   promote:
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       actions: read
       contents: write
