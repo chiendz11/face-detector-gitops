@@ -683,6 +683,8 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn("terraform-bootstrap-apply.yml", main_tf)
         self.assertIn("environment:bootstrap:job_workflow_ref", main_tf)
         self.assertIn("BootstrapTerraformStateBackend", main_tf)
+        self.assertIn('"s3:GetBucketCORS"', main_tf)
+        self.assertIn('"s3:GetBucketOwnershipControls"', main_tf)
         self.assertIn('"s3:GetBucketPolicy"', main_tf)
         self.assertIn('"dynamodb:ListTagsOfResource"', main_tf)
         self.assertIn("BootstrapManagedIAM", main_tf)
