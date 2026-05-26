@@ -131,11 +131,11 @@ rate limiting
 IP allowlist hoặc private network
 ```
 
-Hiện tại cách truy cập đúng là dùng `kubectl port-forward` khi cần debug:
+Hiện tại cách truy cập sandbox đúng là dùng `kubectl port-forward` khi cần debug. IAM user cá nhân không có quyền mặc định; nếu cần xem Grafana UI thường xuyên, hãy cấu hình repo variable `MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON` với IAM role/principal được phép port-forward theo RBAC tối thiểu.
 
 ```powershell
-aws eks update-kubeconfig --region ap-southeast-1 --name <cluster-name>
-kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+aws eks update-kubeconfig --region ap-southeast-1 --name <cluster-name> --role-arn <monitoring-observer-role-arn>
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 ```
 
 Sau đó mở:
@@ -147,7 +147,16 @@ http://localhost:3000
 Mật khẩu Grafana mặc định do Helm chart tạo trong Kubernetes Secret. Lấy bằng:
 
 ```powershell
-kubectl -n monitoring get secret monitoring-grafana -o jsonpath="{.data.admin-password}" | %{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) }
+kubectl -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath="{.data.admin-password}" | %{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) }
+```
+
+RBAC port-forward chỉ cấp quyền trong namespace `monitoring`:
+
+```text
+get/list/watch pods, services, endpoints
+get/list/watch endpointslices
+create pods/portforward
+get secret kube-prometheus-stack-grafana
 ```
 
 Production sau này có thể expose Grafana qua internal ingress hoặc VPN, nhưng không nên public thẳng chỉ bằng LoadBalancer.
@@ -468,7 +477,7 @@ Lệnh nhanh:
 kubectl -n facedetector get pods
 kubectl -n facedetector logs deploy/backend --tail=200
 kubectl -n monitoring get servicemonitor,prometheusrule
-kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 ```
 
 ## 13. Vì Sao Chưa Thêm Loki/Tempo Ngay?
@@ -578,7 +587,7 @@ Cluster checks sau deploy:
 kubectl -n monitoring get pods
 kubectl -n monitoring get prometheus,alertmanager
 kubectl -n facedetector get servicemonitor,prometheusrule
-kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 ```
 
 Kiểm tra backend metrics:

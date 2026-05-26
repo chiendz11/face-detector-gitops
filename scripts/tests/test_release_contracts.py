@@ -1004,6 +1004,27 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn("monitoring_namespace", outputs_tf)
         self.assertIn("helm_release.kube_prometheus_stack[0]|kube-prometheus-stack|monitoring", infrastructure_workflow)
 
+    def test_eks_grants_least_privilege_monitoring_port_forward_access(self) -> None:
+        main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
+        variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
+        infrastructure_workflow = (REPO_ROOT / ".github/workflows/infrastructure.yml").read_text(encoding="utf-8")
+        plan_workflow = (REPO_ROOT / ".github/workflows/terraform-plan-reusable.yml").read_text(encoding="utf-8")
+        monitoring_docs = (REPO_ROOT / "docs/monitoring-observability-enterprise.md").read_text(encoding="utf-8")
+
+        self.assertIn('variable "monitoring_port_forward_principal_arns"', variables_tf)
+        self.assertIn("monitoring-port-forwarders", main_tf)
+        self.assertIn('resource "kubernetes_role" "monitoring_port_forward"', main_tf)
+        self.assertIn('resource "kubernetes_role_binding" "monitoring_port_forward"', main_tf)
+        self.assertIn("pods/portforward", main_tf)
+        self.assertIn("endpointslices", main_tf)
+        self.assertIn("kube-prometheus-stack-grafana", main_tf)
+        self.assertIn("kubernetes_groups = [local.monitoring_port_forward_group]", main_tf)
+        self.assertIn("MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON", infrastructure_workflow)
+        self.assertIn("TF_VAR_monitoring_port_forward_principal_arns", infrastructure_workflow)
+        self.assertIn("TF_VAR_monitoring_port_forward_principal_arns", plan_workflow)
+        self.assertIn("MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON", monitoring_docs)
+        self.assertIn("svc/kube-prometheus-stack-grafana", monitoring_docs)
+
 
 class WorkflowRoleSplitContractTest(unittest.TestCase):
     def test_sandbox_workflows_load_task_scoped_role_arns_with_legacy_fallback(self) -> None:

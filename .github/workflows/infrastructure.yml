@@ -411,6 +411,7 @@ jobs:
           TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
           TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
           TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
+          TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
@@ -484,6 +485,7 @@ jobs:
           TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
           TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
           TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
+          TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
         run: terraform apply -auto-approve -input=false
 
       - name: Configure Cloudflare ExternalDNS token
@@ -806,6 +808,7 @@ jobs:
           TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
           TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
           TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
+          TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
         run: terraform destroy -auto-approve -input=false
 
       - name: Cleanup sandbox AWS orphans after destroy
@@ -851,6 +854,7 @@ jobs:
           TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
           TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
           TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
+          TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
         run: terraform destroy -auto-approve -input=false
 
       - name: Fail if Terraform destroy did not complete
