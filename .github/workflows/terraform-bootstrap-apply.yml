@@ -41,6 +41,16 @@ on:
         required: true
         type: boolean
         default: true
+      manage_public_dns_zone:
+        description: Optional Route53 path. Leave false when using Cloudflare DNS.
+        required: true
+        type: boolean
+        default: false
+      validate_public_dns_certificate:
+        description: Optional Route53 path. Wait for ACM DNS validation only after registrar nameservers delegate the domain to Route53.
+        required: true
+        type: boolean
+        default: false
 
 run-name: Terraform bootstrap ${{ inputs.command }} by @${{ github.actor }}
 
@@ -82,6 +92,8 @@ jobs:
           TF_STATE_BUCKET_VAR: ${{ vars.TF_STATE_BUCKET || '' }}
           TF_STATE_LOCK_TABLE_SECRET: ${{ secrets.TF_STATE_LOCK_TABLE || '' }}
           TF_STATE_LOCK_TABLE_VAR: ${{ vars.TF_STATE_LOCK_TABLE || '' }}
+          FACE_DETECTOR_BASE_DOMAIN: ${{ vars.FACE_DETECTOR_BASE_DOMAIN || '' }}
+          MANAGE_PUBLIC_DNS_ZONE: ${{ inputs.manage_public_dns_zone }}
         run: |
           set -euo pipefail
 
@@ -111,12 +123,17 @@ jobs:
             echo "TF_STATE_LOCK_TABLE must be configured as a GitHub secret or variable." >&2
             exit 1
           fi
+          if [ "${MANAGE_PUBLIC_DNS_ZONE}" = "true" ] && [ -z "${FACE_DETECTOR_BASE_DOMAIN}" ]; then
+            echo "FACE_DETECTOR_BASE_DOMAIN must be configured as a GitHub variable before managing public DNS." >&2
+            exit 1
+          fi
 
           echo "::add-mask::${role_arn}"
           {
             echo "role_arn=${role_arn}"
             echo "state_bucket=${state_bucket}"
             echo "lock_table=${lock_table}"
+            echo "base_domain=${FACE_DETECTOR_BASE_DOMAIN}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Configure AWS credentials
@@ -157,6 +174,9 @@ jobs:
           TF_VAR_manage_github_oidc_sandbox_role: ${{ inputs.manage_sandbox_role }}
           TF_VAR_manage_github_oidc_sandbox_split_roles: ${{ inputs.manage_sandbox_split_roles }}
           TF_VAR_attach_github_oidc_sandbox_split_policies: ${{ inputs.attach_sandbox_split_policies }}
+          TF_VAR_manage_public_dns_zone: ${{ inputs.manage_public_dns_zone }}
+          TF_VAR_public_dns_base_domain: ${{ steps.settings.outputs.base_domain }}
+          TF_VAR_validate_public_dns_certificate: ${{ inputs.validate_public_dns_certificate }}
         run: terraform plan -out=tfplan
 
       - name: Terraform apply

@@ -1,6 +1,14 @@
 envSecretName: face-detector-env
 imagePullSecrets: []
 
+publicDns:
+  enabled: false
+  hostname: ""
+
+publicTls:
+  enabled: false
+  certificateArn: ""
+
 backend:
   replicaCount: 1
   image:

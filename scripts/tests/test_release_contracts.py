@@ -541,6 +541,151 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
         self.assertIn("curl --fail", readiness_script)
         self.assertIn("Timed out waiting for public app readiness", readiness_script)
 
+    def test_bootstrap_prefers_stable_public_dns_when_enabled(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/app-cd.yml")
+        workflow_text = (REPO_ROOT / ".github/workflows/app-cd.yml").read_text(encoding="utf-8")
+        staging_template = (REPO_ROOT / "deploy/argocd/staging-application.yaml.tpl").read_text(encoding="utf-8")
+        production_template = (REPO_ROOT / "deploy/argocd/production-application.yaml.tpl").read_text(encoding="utf-8")
+
+        self.assertIn("FACE_DETECTOR_BASE_DOMAIN", workflow_text)
+        self.assertIn("FACE_DETECTOR_DNS_PROVIDER", workflow_text)
+        self.assertIn("FACE_DETECTOR_PUBLIC_DNS_ENABLED", workflow_text)
+        self.assertIn("FACE_DETECTOR_PUBLIC_TLS_ENABLED", workflow_text)
+        self.assertIn("CLOUDFLARE_ZONE_ID", workflow_text)
+        self.assertIn("PUBLIC_ENDPOINT_PARAMETER", staging_template)
+        self.assertIn("PUBLIC_ENDPOINT_PARAMETER", production_template)
+
+        resolve_script = extract_run_step(workflow, "bootstrap", "Resolve public endpoint Helm parameters")
+        self.assertIn('hostname = base_domain', resolve_script)
+        self.assertIn('hostname = f"staging.{base_domain}"', resolve_script)
+        self.assertIn('label = f"sandbox-pr-{pr_number}"', resolve_script)
+        self.assertIn("publicDns.enabled", resolve_script)
+        self.assertIn("publicTls.certificateArn", resolve_script)
+
+        endpoint_script = extract_run_step(workflow, "bootstrap", "Resolve public app endpoint")
+        self.assertIn("STABLE_BASE_URL", endpoint_script)
+        self.assertIn("LOAD_BALANCER_HOSTNAME", endpoint_script)
+        self.assertIn('source="stable-dns"', endpoint_script)
+        self.assertIn('source="load-balancer"', endpoint_script)
+
+        smoke_step = extract_step(workflow, "bootstrap", "Run post-deploy smoke test")
+        self.assertEqual(smoke_step["env"]["FACE_DETECTOR_BASE_URL"], "${{ steps.public-endpoint.outputs.base_url }}")
+
+    def test_argocd_uses_dedicated_project_and_fine_grained_repo_credentials(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/app-cd.yml")
+        workflow_text = (REPO_ROOT / ".github/workflows/app-cd.yml").read_text(encoding="utf-8")
+        project_template = (REPO_ROOT / "deploy/argocd/face-detector-project.yaml.tpl").read_text(encoding="utf-8")
+        staging_template = (REPO_ROOT / "deploy/argocd/staging-application.yaml.tpl").read_text(encoding="utf-8")
+        production_template = (REPO_ROOT / "deploy/argocd/production-application.yaml.tpl").read_text(encoding="utf-8")
+
+        self.assertIn("kind: AppProject", project_template)
+        self.assertIn("name: face-detector", project_template)
+        self.assertIn('sourceRepos:\n    - "${ARGOCD_REPO_URL}"', project_template)
+        self.assertIn("namespace: ${APP_NAMESPACE}", project_template)
+        self.assertIn("clusterResourceWhitelist: []", project_template)
+        self.assertIn("namespaceResourceWhitelist", project_template)
+        self.assertIn("kind: Deployment", project_template)
+        self.assertIn("kind: Service", project_template)
+        self.assertIn("kind: Job", project_template)
+        self.assertIn("kind: HorizontalPodAutoscaler", project_template)
+        self.assertIn("kind: ScaledObject", project_template)
+        self.assertIn("namespaceResourceBlacklist", project_template)
+        self.assertIn("kind: Secret", project_template)
+
+        self.assertIn("project: face-detector", staging_template)
+        self.assertIn("project: face-detector", production_template)
+        self.assertNotIn("project: default", staging_template)
+        self.assertNotIn("project: default", production_template)
+        self.assertIn('repoURL: "${ARGOCD_REPO_URL}"', staging_template)
+        self.assertIn('repoURL: "${ARGOCD_REPO_URL}"', production_template)
+
+        credential_step = extract_step(workflow, "bootstrap", "Configure ArgoCD repository credentials")
+        self.assertEqual(credential_step["id"], "argocd-repo")
+        credential_script = credential_step["run"]
+        self.assertIn("ARGOCD_REPO_DEPLOY_KEY", workflow_text)
+        self.assertIn("ARGOCD_GITHUB_APP_PRIVATE_KEY", workflow_text)
+        self.assertIn("ARGOCD_GITHUB_APP_INSTALLATION_ID", workflow_text)
+        self.assertIn("CREDENTIAL_MODE=\"deploy-key\"", credential_script)
+        self.assertIn("CREDENTIAL_MODE=\"github-app\"", credential_script)
+        self.assertIn("CREDENTIAL_MODE=\"legacy-token\"", credential_script)
+        self.assertLess(
+            credential_script.index("CREDENTIAL_MODE=\"github-app\""),
+            credential_script.index("CREDENTIAL_MODE=\"deploy-key\""),
+        )
+        self.assertIn("sshPrivateKey", credential_script)
+        self.assertIn("githubAppPrivateKey", credential_script)
+        self.assertIn("githubAppInstallationID", credential_script)
+        self.assertIn("ARGOCD_REPO_TOKEN", credential_script)
+        self.assertIn("repo_url=${REPO_URL}", credential_script)
+
+        project_step = extract_step(workflow, "bootstrap", "Apply ArgoCD project")
+        self.assertEqual(project_step["env"]["ARGOCD_REPO_URL"], "${{ steps.argocd-repo.outputs.repo_url }}")
+        self.assertIn("face-detector-project.yaml.tpl", project_step["run"])
+
+        application_step = extract_step(workflow, "bootstrap", "Apply ArgoCD application")
+        self.assertEqual(application_step["env"]["ARGOCD_REPO_URL"], "${{ steps.argocd-repo.outputs.repo_url }}")
+
+    def test_argocd_control_plane_is_internal_rbac_logged_and_notifies(self) -> None:
+        eks_main = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
+        eks_variables = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
+
+        self.assertIn('type = "ClusterIP"', eks_main)
+        self.assertIn('"server.insecure" = false', eks_main)
+        self.assertIn('"server.disable.auth"', eks_main)
+        self.assertIn('"exec.enabled"', eks_main)
+        self.assertIn('"server.rbac.log.enforce.enable" = true', eks_main)
+        self.assertIn('format = "json"', eks_main)
+        self.assertIn('"policy.default" = "role:face-detector-readonly"', eks_main)
+        self.assertIn("role:face-detector-admin", eks_main)
+        self.assertIn("argocd_oidc_config", eks_main)
+        self.assertIn('"oidc.config" = var.argocd_oidc_config', eks_main)
+        self.assertIn("notifications = {", eks_main)
+        self.assertIn("enabled       = true", eks_main)
+        self.assertIn("argocd_notifications_recipients", eks_main)
+        self.assertIn("trigger.on-sync-failed", eks_main)
+        self.assertIn("trigger.on-health-degraded", eks_main)
+
+        self.assertIn('variable "argocd_oidc_config"', eks_variables)
+        self.assertIn('variable "argocd_admin_rbac_subjects"', eks_variables)
+        self.assertIn('variable "argocd_notifications_recipients"', eks_variables)
+
+        for workflow_path in (
+            ".github/workflows/infrastructure.yml",
+            ".github/workflows/terraform-plan-reusable.yml",
+        ):
+            with self.subTest(workflow=workflow_path):
+                workflow_text = (REPO_ROOT / workflow_path).read_text(encoding="utf-8")
+                self.assertIn("TF_VAR_argocd_oidc_config", workflow_text)
+                self.assertIn("TF_VAR_argocd_admin_rbac_subjects", workflow_text)
+                self.assertIn("TF_VAR_argocd_notifications_recipients", workflow_text)
+
+    def test_production_argocd_sync_is_manual_with_sync_window(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/app-cd.yml")
+        project_template = (REPO_ROOT / "deploy/argocd/face-detector-project.yaml.tpl").read_text(encoding="utf-8")
+        staging_template = (REPO_ROOT / "deploy/argocd/staging-application.yaml.tpl").read_text(encoding="utf-8")
+        production_template = (REPO_ROOT / "deploy/argocd/production-application.yaml.tpl").read_text(encoding="utf-8")
+
+        self.assertIn("automated:", staging_template)
+        self.assertIn("prune: true", staging_template)
+        self.assertIn("selfHeal: true", staging_template)
+        self.assertNotIn("automated:", production_template)
+        self.assertNotIn("prune: true", production_template)
+        self.assertNotIn("selfHeal: true", production_template)
+
+        self.assertIn("syncWindows:", project_template)
+        self.assertIn("face-detector-production", project_template)
+        self.assertIn("manualSync: true", project_template)
+
+        manual_step = extract_step(workflow, "bootstrap", "Show production manual sync gate")
+        self.assertIn("deployment_environment == 'production'", manual_step["if"])
+
+        wait_sync = extract_step(workflow, "bootstrap", "Wait for ArgoCD sync to requested revision")
+        self.assertIn("deployment_environment != 'production'", wait_sync["if"])
+        rollout = extract_step(workflow, "bootstrap", "Wait for application rollout")
+        self.assertIn("deployment_environment != 'production'", rollout["if"])
+        smoke = extract_step(workflow, "bootstrap", "Run post-deploy smoke test")
+        self.assertIn("deployment_environment != 'production'", smoke["if"])
+
     def test_sandbox_auto_apply_allows_package_publish_for_bootstrap(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-auto-apply.yml")
         permissions = workflow["jobs"]["bootstrap-sandbox"]["permissions"]
@@ -727,6 +872,37 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn('variable "attach_github_oidc_bootstrap_policy"', variables_tf)
         self.assertIn("github_oidc_bootstrap_role_arn", outputs_tf)
 
+    def test_bootstrap_can_manage_public_dns_zone_and_certificate(self) -> None:
+        main_tf = (REPO_ROOT / "terraform/bootstrap/main.tf").read_text(encoding="utf-8")
+        dns_tf = (REPO_ROOT / "terraform/bootstrap/public_dns.tf").read_text(encoding="utf-8")
+        variables_tf = (REPO_ROOT / "terraform/bootstrap/variables.tf").read_text(encoding="utf-8")
+        outputs_tf = (REPO_ROOT / "terraform/bootstrap/outputs.tf").read_text(encoding="utf-8")
+        workflow_text = (REPO_ROOT / ".github/workflows/terraform-bootstrap-apply.yml").read_text(encoding="utf-8")
+
+        self.assertIn('variable "manage_public_dns_zone"', variables_tf)
+        self.assertIn('variable "public_dns_base_domain"', variables_tf)
+        self.assertIn('variable "validate_public_dns_certificate"', variables_tf)
+        self.assertIn('resource "aws_route53_zone" "public"', dns_tf)
+        self.assertIn('resource "aws_acm_certificate" "public"', dns_tf)
+        self.assertIn('resource "aws_route53_hosted_zone_dnssec" "public"', dns_tf)
+        self.assertIn('resource "aws_route53_query_log" "public"', dns_tf)
+        self.assertIn('resource "aws_cloudwatch_log_group" "route53_query_logs"', dns_tf)
+        self.assertIn("#checkov:skip=CKV_AWS_356:KMS key policies require Resource", dns_tf)
+        self.assertIn('resource "aws_route53_record" "public_certificate_validation"', dns_tf)
+        self.assertIn('resource "aws_acm_certificate_validation" "public"', dns_tf)
+        self.assertIn("BootstrapPublicDns", main_tf)
+        self.assertIn('"route53:CreateHostedZone"', main_tf)
+        self.assertIn('"route53:EnableHostedZoneDNSSEC"', main_tf)
+        self.assertIn('"route53:CreateQueryLoggingConfig"', main_tf)
+        self.assertIn('"acm:RequestCertificate"', main_tf)
+        self.assertIn("public_dns_hosted_zone_id", outputs_tf)
+        self.assertIn("public_dns_name_servers", outputs_tf)
+        self.assertIn("public_tls_certificate_arn", outputs_tf)
+        self.assertIn("public_dns_dnssec_ds_record", outputs_tf)
+        self.assertIn("public_dns_query_log_group_name", outputs_tf)
+        self.assertIn("FACE_DETECTOR_BASE_DOMAIN", workflow_text)
+        self.assertIn("TF_VAR_manage_public_dns_zone", workflow_text)
+
     def test_eks_grants_access_to_task_scoped_sandbox_roles(self) -> None:
         main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
         variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
@@ -741,6 +917,55 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn('variable "sandbox_plan_role_arn"', variables_tf)
         self.assertIn('variable "sandbox_appdeploy_role_arn"', variables_tf)
         self.assertIn('variable "sandbox_destroy_role_arn"', variables_tf)
+
+    def test_eks_installs_external_dns_for_cloudflare_and_optional_route53(self) -> None:
+        main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
+        variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
+        outputs_tf = (REPO_ROOT / "terraform/eks/outputs.tf").read_text(encoding="utf-8")
+        infrastructure_workflow = (REPO_ROOT / ".github/workflows/infrastructure.yml").read_text(encoding="utf-8")
+        plan_workflow = (REPO_ROOT / ".github/workflows/terraform-plan-reusable.yml").read_text(encoding="utf-8")
+
+        self.assertIn('variable "public_dns_enabled"', variables_tf)
+        self.assertIn('variable "public_dns_provider"', variables_tf)
+        self.assertIn('variable "public_dns_base_domain"', variables_tf)
+        self.assertIn('variable "cloudflare_zone_id"', variables_tf)
+        self.assertIn('variable "external_dns_cloudflare_secret_name"', variables_tf)
+        self.assertIn('variable "public_tls_enabled"', variables_tf)
+        self.assertIn('default     = "cloudflare"', variables_tf)
+        self.assertIn('contains(["cloudflare", "route53"]', variables_tf)
+
+        self.assertIn('data "aws_route53_zone" "public"', main_tf)
+        self.assertIn('data "aws_acm_certificate" "public"', main_tf)
+        self.assertIn('resource "aws_iam_role" "external_dns"', main_tf)
+        self.assertIn('resource "aws_iam_policy" "external_dns"', main_tf)
+        self.assertIn('resource "helm_release" "external_dns"', main_tf)
+        self.assertIn("external-dns.alpha.kubernetes.io/hostname", (REPO_ROOT / "deploy/helm/face-detector/templates/nginx.yaml").read_text(encoding="utf-8"))
+        self.assertIn('name = local.public_dns_provider', main_tf)
+        self.assertIn("local.public_dns_uses_cloudflare", main_tf)
+        self.assertIn("CF_API_TOKEN", main_tf)
+        self.assertIn("secretKeyRef", main_tf)
+        self.assertIn('key  = "api-token"', main_tf)
+        self.assertIn("--zone-id-filter=${local.public_dns_cloudflare_zone_id}", main_tf)
+        self.assertIn('wait             = local.public_dns_uses_route53', main_tf)
+        self.assertIn("--zone-id-filter=${local.public_dns_route53_zone_id}", main_tf)
+        self.assertIn('"arn:aws:route53:::hostedzone/${local.public_dns_route53_zone_id}"', main_tf)
+        self.assertIn('"arn:aws:route53:::change/*"', main_tf)
+        self.assertIn("route53:ChangeResourceRecordSetsNormalizedRecordNames", main_tf)
+        self.assertIn("txtOwnerId", main_tf)
+        self.assertIn("public_dns_hosted_zone_id", outputs_tf)
+        self.assertIn("public_dns_provider", outputs_tf)
+        self.assertIn("public_dns_cloudflare_zone_id", outputs_tf)
+        self.assertIn("external_dns_cloudflare_secret_name", outputs_tf)
+        self.assertIn("public_tls_certificate_arn", outputs_tf)
+
+        self.assertIn("FACE_DETECTOR_DNS_PROVIDER", infrastructure_workflow)
+        self.assertIn("CLOUDFLARE_ZONE_ID", infrastructure_workflow)
+        self.assertIn("CLOUDFLARE_API_TOKEN", infrastructure_workflow)
+        self.assertIn("Configure Cloudflare ExternalDNS token", infrastructure_workflow)
+        self.assertIn("TF_VAR_public_dns_provider", infrastructure_workflow)
+        self.assertIn("TF_VAR_cloudflare_zone_id", infrastructure_workflow)
+        self.assertIn("TF_VAR_public_dns_provider", plan_workflow)
+        self.assertIn("TF_VAR_cloudflare_zone_id", plan_workflow)
 
 
 class WorkflowRoleSplitContractTest(unittest.TestCase):
@@ -885,6 +1110,24 @@ class HelmChartContractTest(unittest.TestCase):
 
         self.assertIn("location = /health", template)
         self.assertIn("proxy_pass http://backend_upstream/health;", template)
+
+    def test_nginx_service_supports_external_dns_and_tls_termination(self) -> None:
+        template = (REPO_ROOT / "deploy/helm/face-detector/templates/nginx.yaml").read_text(
+            encoding="utf-8"
+        )
+        values = yaml.safe_load((REPO_ROOT / "deploy/helm/face-detector/values.yaml").read_text(encoding="utf-8"))
+        infra_ci = (REPO_ROOT / ".github/workflows/reusable-infra-ci.yml").read_text(encoding="utf-8")
+
+        self.assertEqual(values["publicDns"], {"enabled": False, "hostname": ""})
+        self.assertEqual(values["publicTls"], {"enabled": False, "certificateArn": ""})
+        self.assertIn("external-dns.alpha.kubernetes.io/hostname", template)
+        self.assertIn("publicDns.hostname is required", template)
+        self.assertIn("service.beta.kubernetes.io/aws-load-balancer-ssl-cert", template)
+        self.assertIn("publicTls.certificateArn is required", template)
+        self.assertIn("service.beta.kubernetes.io/aws-load-balancer-ssl-ports", template)
+        self.assertIn("name: https", template)
+        self.assertIn("--set publicDns.enabled=true", infra_ci)
+        self.assertIn("--set publicTls.enabled=true", infra_ci)
 
 
 class ReusableAppReleaseContractTest(unittest.TestCase):

@@ -1,23 +1,44 @@
-# Terraform bootstrap workflow
+# Workflow Terraform Bootstrap
 
-Bootstrap Terraform owns the platform foundation that other workflows depend on:
+`terraform/bootstrap` quản lý lớp nền móng mà các workflow khác phụ thuộc vào.
 
-- Terraform state S3 bucket.
-- Terraform lock DynamoDB table.
-- GitHub OIDC IAM roles and permission policies for sandbox workflows.
-- The approved bootstrap role used to update the bootstrap layer itself.
+Lớp này gồm:
 
-Because this layer controls IAM, normal local `terraform apply` should be treated as a break-glass path. The standard path is the GitHub Actions workflow:
+- S3 bucket lưu Terraform remote state.
+- DynamoDB table dùng làm lock table cho Terraform state.
+- GitHub OIDC IAM roles và permission policies cho sandbox workflows.
+- `Role-Bootstrap`, tức role được phép cập nhật chính lớp bootstrap.
+- IAM/state foundation cho các workflow khác. Route53 hosted zone, wildcard ACM certificate, DNSSEC và DNS query logging chỉ là nhánh optional nếu bạn chọn AWS Route53 thay vì Cloudflare DNS.
+
+Runbook tiếng Việt đầy đủ về bootstrap, DNS ổn định, ArgoCD, edge device config và task-scoped IAM roles nằm ở:
 
 ```text
-Actions -> Terraform Bootstrap Apply -> Run workflow
+docs/public-dns-gitops-edge-operations.md
 ```
 
-## Required GitHub configuration
+## Vì Sao Bootstrap Nhạy Cảm?
 
-Create a GitHub Environment named `bootstrap` and require owner approval for deployments to that environment.
+Bootstrap kiểm soát IAM và Terraform state. Nếu cấu hình sai, các workflow khác có thể mất quyền deploy hoặc có quyền quá rộng.
 
-Configure these repository secrets or variables:
+Vì vậy local `terraform apply` nên được coi là break-glass path. Flow chuẩn là chạy qua GitHub Actions:
+
+```text
+Actions
+-> Terraform Bootstrap Apply
+-> Run workflow
+```
+
+## Cấu Hình GitHub Cần Có
+
+Tạo GitHub Environment:
+
+```text
+bootstrap
+```
+
+Environment này nên yêu cầu owner approval trước khi job được chạy.
+
+Các secret hoặc variable cần cấu hình:
 
 ```text
 AWS_ROLE_BOOTSTRAP_ARN
@@ -27,24 +48,52 @@ TF_STATE_LOCK_TABLE
 TF_STATE_REGION
 ```
 
-`AWS_ROLE_BOOTSTRAP_ARN` must point to the IAM role managed by `terraform/bootstrap`, usually `Role-Bootstrap`.
-
-## Normal flow
+`AWS_ROLE_BOOTSTRAP_ARN` phải trỏ tới IAM role do `terraform/bootstrap` quản lý, thường là:
 
 ```text
-PR changes terraform/bootstrap or bootstrap workflow
--> CI validates Terraform syntax/contracts
--> PR merges into master
--> owner runs Terraform Bootstrap Apply with command=plan
--> owner reviews plan output
--> owner runs Terraform Bootstrap Apply with command=apply and confirm_apply=apply-bootstrap
--> GitHub Environment bootstrap asks for owner approval
--> workflow assumes AWS_ROLE_BOOTSTRAP_ARN
--> terraform/bootstrap apply updates AWS IAM/state foundation
+Role-Bootstrap
 ```
 
-The workflow always checks out the trusted default branch and fails if dispatched from another ref. It does not fall back to sandbox, staging, or production roles.
+## Flow Bình Thường
 
-## First bootstrap
+```text
+PR thay đổi terraform/bootstrap hoặc bootstrap workflow
+-> CI validate Terraform syntax/contracts
+-> PR merge vào master
+-> owner chạy Terraform Bootstrap Apply với command=plan
+-> owner xem plan output
+-> owner chạy Terraform Bootstrap Apply với command=apply và confirm_apply=apply-bootstrap
+-> GitHub Environment bootstrap yêu cầu owner approval
+-> workflow assume AWS_ROLE_BOOTSTRAP_ARN
+-> terraform/bootstrap apply cập nhật AWS IAM/state foundation
+```
 
-The very first creation of the Terraform state backend and `Role-Bootstrap` may still require a one-time admin bootstrap from a trusted machine. After that, ongoing changes should go through the approved workflow above.
+Workflow luôn checkout trusted default branch. Nếu dispatch từ ref khác, workflow sẽ fail. Workflow này không fallback sang sandbox, staging hoặc production roles.
+
+## Bootstrap Lần Đầu
+
+Lần đầu tiên tạo Terraform state backend và `Role-Bootstrap` có thể vẫn cần admin credentials từ máy tin cậy.
+
+Sau lần đầu, các thay đổi tiếp theo nên đi qua workflow `Terraform Bootstrap Apply` để có:
+
+- PR review
+- CI validation
+- Git history
+- GitHub Environment approval
+- audit trail rõ ràng
+
+## Khi Nào Cần Chạy Bootstrap?
+
+Chạy bootstrap khi thay đổi các thành phần nền móng như:
+
+- Terraform state bucket hoặc lock table.
+- GitHub OIDC trust policy.
+- IAM role/policy cho sandbox split roles.
+- Role-Bootstrap.
+- IAM role hoặc trust policy.
+- Terraform state backend.
+- Route53 hosted zone, ACM certificate, DNSSEC hoặc DNS query logging nếu đang dùng nhánh Route53 optional.
+
+Với hướng hiện tại `FACE_DETECTOR_DNS_PROVIDER=cloudflare`, việc add domain vào Cloudflare, đổi nameserver và tạo Cloudflare API token không cần `terraform/bootstrap apply`. Bạn chỉ cần set GitHub variables/secrets rồi để `terraform/eks` cài ExternalDNS provider Cloudflare.
+
+Không cần chạy bootstrap cho thay đổi app code thông thường.

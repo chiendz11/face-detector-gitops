@@ -4,9 +4,9 @@ metadata:
   name: face-detector-staging
   namespace: ${ARGOCD_NAMESPACE}
 spec:
-  project: default
+  project: face-detector
   source:
-    repoURL: https://github.com/${GITHUB_REPOSITORY}.git
+    repoURL: "${ARGOCD_REPO_URL}"
     targetRevision: ${TARGET_REVISION}
     path: deploy/helm/face-detector
     helm:
@@ -24,6 +24,7 @@ spec:
           value: ${NGINX_IMAGE_REPOSITORY}
 ${IMAGE_DIGEST_PARAMETER}
 ${IMAGE_PULL_SECRET_PARAMETER}
+${PUBLIC_ENDPOINT_PARAMETER}
   destination:
     server: https://kubernetes.default.svc
     namespace: ${APP_NAMESPACE}

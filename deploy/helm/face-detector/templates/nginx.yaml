@@ -143,6 +143,14 @@ metadata:
 {{- range $key, $value := .Values.nginx.service.annotations }}
     {{ $key }}: {{ $value | quote }}
 {{- end }}
+{{- if .Values.publicDns.enabled }}
+    external-dns.alpha.kubernetes.io/hostname: {{ required "publicDns.hostname is required when publicDns.enabled=true" .Values.publicDns.hostname | quote }}
+{{- end }}
+{{- if .Values.publicTls.enabled }}
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: {{ required "publicTls.certificateArn is required when publicTls.enabled=true" .Values.publicTls.certificateArn | quote }}
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "https"
+{{- end }}
 spec:
   selector:
     app.kubernetes.io/name: face-detector
@@ -151,4 +159,9 @@ spec:
     - name: http
       port: {{ .Values.nginx.service.port }}
       targetPort: {{ .Values.nginx.service.containerPort }}
+{{- if .Values.publicTls.enabled }}
+    - name: https
+      port: 443
+      targetPort: {{ .Values.nginx.service.containerPort }}
+{{- end }}
   type: {{ .Values.nginx.service.type }}

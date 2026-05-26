@@ -1,70 +1,85 @@
-# Sandbox Decision Matrix
+# Ma Trận Quyết Định Sandbox
 
-This document tells reviewers when to use the expensive PR sandbox lane and when to keep a PR in the normal fast lane.
+Tài liệu này giúp reviewer quyết định khi nào cần dùng sandbox PR tốn chi phí, và khi nào chỉ cần fast lane CI bình thường.
 
-## Default Rule
+## Quy Tắc Mặc Định
 
-- Sandbox is reviewer-controlled, not automatic for every PR.
-- `deploy-sandbox` is the preferred label. `deploy-preview` remains an accepted compatibility alias for the same reviewer intent.
-- Use the fast lane by default. Escalate to sandbox only when the blast radius justifies running the full PR environment.
-- Standard sandbox auto-apply only works for same-repository, non-draft PRs and now also waits for the relevant PR verification lanes to be green.
-- The `Sandbox Policy` PR check separates recommendation from enforcement:
-  - heavy non-critical changes get `sandbox-recommended` and do not block merge by themselves.
-  - critical changes get `sandbox-required` and block merge until sandbox validation or an explicit owner waiver.
-- `deploy-sandbox` and `deploy-preview` are deployment intent labels only. They allow auto-apply; they are not waiver labels.
+- Sandbox là quyết định có chủ đích của reviewer/owner, không tự động deploy cho mọi PR.
+- Label chính nên dùng là `deploy-sandbox`.
+- `deploy-preview` vẫn được chấp nhận như alias tương thích.
+- Mặc định dùng fast lane. Chỉ nâng lên sandbox khi blast radius đủ lớn.
+- Sandbox auto-apply chỉ chạy cho PR cùng repo, không draft, và sau khi các lane verify liên quan đã xanh.
+- `Sandbox Policy` tách recommendation khỏi enforcement:
+  - heavy non-critical: bot gắn `sandbox-recommended`, không tự block merge.
+  - critical: bot gắn `sandbox-required`, block merge cho đến khi có sandbox validation hoặc owner waiver.
+- `deploy-sandbox` và `deploy-preview` chỉ thể hiện intent deploy. Chúng không phải waiver.
 
-## Heavy Lane: Usually Recommended
+## Heavy Lane: Thường Nên Deploy Sandbox
 
-Use `deploy-sandbox` when the PR has meaningful blast radius and the exact integrated environment is part of the review.
+Dùng `deploy-sandbox` khi PR có blast radius đáng kể và reviewer cần thấy hệ thống chạy tích hợp thật.
 
-- Cross-service or integration behavior changes that need the real ingress, image, or service-to-service path.
-- Release contract changes such as service Dockerfiles or compose overrides when they do not touch the trusted control plane.
-- Any PR where reviewer confidence depends on seeing the combined system, not just unit, integration, or static checks.
+Ví dụ:
 
-For these changes the bot may add `sandbox-recommended`. This is advisory; owner/DevOps can still merge after required CI if they decide a sandbox is not worth the cost.
+- thay đổi hành vi cross-service
+- thay đổi ingress, image, hoặc service-to-service path
+- thay đổi Dockerfile hoặc compose override có ảnh hưởng runtime
+- thay đổi mà unit/integration/static check không đủ tạo confidence
 
-## Critical Lane: Required Validation Or Waiver
+Với các thay đổi này, bot có thể gắn `sandbox-recommended`. Owner/DevOps vẫn có thể merge sau khi required CI pass nếu quyết định sandbox không đáng chi phí.
 
-Critical changes must either be validated in sandbox or explicitly waived by the repository owner.
+## Critical Lane: Bắt Buộc Validation Hoặc Waiver
 
-- Stateful schema changes such as database migrations.
-- Workflow, policy, Terraform, IAM, networking, authentication, and other trust-boundary changes.
-- Runtime hardening, deployment contract, or reverse-proxy changes where production-like behavior matters.
+Critical changes phải được validation trong sandbox hoặc được owner waiver rõ ràng.
 
-Valid outcomes:
+Ví dụ:
 
-- owner adds `deploy-sandbox` or `deploy-preview`, auto-apply runs, and the system refreshes `sandbox-validated`.
-- owner adds `skip-sandbox-approved` as an explicit risk waiver.
+- database migrations
+- workflow, policy, Terraform
+- IAM, networking, authentication
+- reverse proxy hoặc runtime hardening
+- deployment contract có thể ảnh hưởng staging/production
+- DNS, Cloudflare, Route53 optional, ArgoCD, ExternalDNS, hoặc GitHub OIDC trust
 
-`allow-self-approve` does not satisfy this gate.
+Kết quả hợp lệ:
 
-## Fast Lane: Do Not Apply A Sandbox Label By Default
+- owner gắn `deploy-sandbox` hoặc `deploy-preview`, auto-apply chạy, hệ thống refresh `sandbox-validated`
+- owner gắn `skip-sandbox-approved` để chấp nhận rủi ro
 
-Keep the PR in the normal CI path when the change is local and the blast radius is small.
+`allow-self-approve` không đủ để pass gate này.
 
-- Pure logic changes contained to one service or module.
-- UI or UX changes that do not alter backend, ingress, or runtime contracts.
-- Tests, documentation, or internal refactors with no externally visible behavior shift.
-- Non-core dependency updates with small scope and green CI evidence.
+## Fast Lane: Không Gắn Sandbox Label Mặc Định
 
-## Reviewer Checklist
+Giữ PR ở normal CI path nếu thay đổi nhỏ và blast radius thấp.
 
-- Confirm the PR actually needs integrated runtime validation before spending sandbox capacity.
-- If `Sandbox Policy` fails with `sandbox-required`, either deploy and wait for `sandbox-validated`, add `skip-sandbox-approved`, or split the change so critical files are isolated.
-- Check that `App CI`, `Repo Security`, `Infra CI`, `Platform CI`, and `Terraform PR Plan` are green before expecting the sandbox to auto-apply.
-- Respect the one-sandbox-per-owner quota. If a sandbox is already active for the same owner, close or destroy the older one first.
-- Remove the deploy label when the sandbox is no longer needed.
-- Use the protected manual DevOps lanes for `devops/*` workflow, IAM, or trust-boundary experiments instead of the normal reviewer label path.
+Ví dụ:
 
-## Lifecycle And Governance
+- logic trong một service/module
+- UI/UX không đổi backend, ingress, runtime contract
+- test, docs, refactor nội bộ
+- dependency update nhỏ, scope hẹp, CI xanh
 
-- Auto-destroy is mandatory. PR sandboxes are torn down on PR close, convert-to-draft, or final deploy-label removal.
-- `sandbox-active` is operational state, not reviewer intent. Reviewers should apply `deploy-sandbox` or `deploy-preview`, not `sandbox-active`.
-- `sandbox-validated` is system state for the current PR head. It is refreshed by GitHub Actions after sandbox apply and bootstrap/smoke validation pass.
-- `skip-sandbox-approved` is an owner waiver. It should be rare and must remain visible in PR labels and artifacts.
-- Sandboxes are ephemeral review environments, not long-lived shared test stacks.
-- Janitor cleanup still applies, so stale environments should not be treated as durable infrastructure.
+## Checklist Cho Reviewer
 
-## Escalation Rule
+- Xác nhận PR thật sự cần integrated runtime validation trước khi tiêu sandbox capacity.
+- Nếu `Sandbox Policy` fail với `sandbox-required`, chọn một trong ba hướng:
+  - deploy sandbox và chờ `sandbox-validated`
+  - gắn `skip-sandbox-approved`
+  - tách PR để isolate critical files
+- Kiểm tra các lane `App CI`, `Repo Security`, `Infra CI`, `Platform CI`, `Terraform PR Plan` đã xanh trước khi chờ auto-apply.
+- Tôn trọng quota một sandbox cho mỗi owner. Nếu owner đã có sandbox active, đóng hoặc destroy sandbox cũ trước.
+- Gỡ deploy label khi không cần sandbox nữa.
+- Dùng protected manual DevOps lane cho thí nghiệm `devops/*`, workflow, IAM, hoặc trust-boundary thay vì label reviewer thông thường.
 
-If a change touches both the normal application surface and the trusted control plane, bias toward the heavier lane and get the sandbox plus the relevant protected approvals.
+## Lifecycle Và Governance
+
+- Auto-destroy là bắt buộc.
+- PR sandbox bị destroy khi PR close, chuyển draft, hoặc gỡ deploy label cuối cùng.
+- `sandbox-active` là operational state, không phải reviewer intent.
+- `sandbox-validated` là system state cho PR head hiện tại.
+- `skip-sandbox-approved` là owner waiver, nên hiếm và phải visible trong PR labels/artifacts.
+- Sandbox là môi trường review tạm thời, không phải shared test stack lâu dài.
+- Janitor vẫn cleanup sandbox quá hạn hoặc lệch state.
+
+## Quy Tắc Escalation
+
+Nếu một thay đổi vừa chạm application surface vừa chạm trusted control plane, hãy ưu tiên lane nặng hơn: chạy sandbox và yêu cầu approval/protection phù hợp.

@@ -211,6 +211,11 @@ jobs:
             "SANDBOX_NODE_MAX_SIZE": repo("SANDBOX_NODE_MAX_SIZE", "2"),
             "SANDBOX_NODE_DESIRED_SIZE": repo("SANDBOX_NODE_DESIRED_SIZE", "1"),
             "SSM_KMS_KEY_ID": repo("SSM_KMS_KEY_ID"),
+            "FACE_DETECTOR_BASE_DOMAIN": repo("FACE_DETECTOR_BASE_DOMAIN"),
+            "FACE_DETECTOR_DNS_PROVIDER": repo("FACE_DETECTOR_DNS_PROVIDER", "cloudflare"),
+            "FACE_DETECTOR_PUBLIC_DNS_ENABLED": repo("FACE_DETECTOR_PUBLIC_DNS_ENABLED", "false"),
+            "FACE_DETECTOR_PUBLIC_TLS_ENABLED": repo("FACE_DETECTOR_PUBLIC_TLS_ENABLED", "false"),
+            "CLOUDFLARE_ZONE_ID": repo("CLOUDFLARE_ZONE_ID"),
           }
 
           for key, value in values.items():
@@ -398,6 +403,14 @@ jobs:
           TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
           TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
           TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
+          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
+          TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
+          TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
+          TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
@@ -462,7 +475,75 @@ jobs:
           TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
           TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
           TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
+          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
+          TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
+          TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
+          TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
         run: terraform apply -auto-approve -input=false
+
+      - name: Configure Cloudflare ExternalDNS token
+        if: inputs.action == 'apply'
+        working-directory: terraform/eks
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
+          DNS_PROVIDER: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          PUBLIC_DNS_ENABLED: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+
+          enabled() {
+            case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+              1|true|yes|on) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          provider="$(printf '%s' "$DNS_PROVIDER" | tr '[:upper:]' '[:lower:]')"
+          if ! enabled "$PUBLIC_DNS_ENABLED" || [ "$provider" != "cloudflare" ]; then
+            echo "Cloudflare ExternalDNS secret is not needed for provider=${DNS_PROVIDER}, public_dns_enabled=${PUBLIC_DNS_ENABLED}."
+            exit 0
+          fi
+
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN must be configured as a GitHub secret when FACE_DETECTOR_DNS_PROVIDER=cloudflare and public DNS is enabled." >&2
+            exit 1
+          fi
+
+          terraform output -json > "$RUNNER_TEMP/eks-outputs.json"
+          read -r namespace secret_name < <(python3 - "$RUNNER_TEMP/eks-outputs.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          outputs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+
+          def output_value(name: str, default: str) -> str:
+              value = outputs.get(name, {}).get("value")
+              return default if value in (None, "") else str(value)
+
+          print(
+              output_value("external_dns_namespace", "kube-system"),
+              output_value("external_dns_cloudflare_secret_name", "external-dns-cloudflare"),
+          )
+          PY
+          )
+
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME" --alias "$CLUSTER_NAME"
+          if [ "$namespace" != "kube-system" ]; then
+            kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f -
+          fi
+          kubectl -n "$namespace" create secret generic "$secret_name" \
+            --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl -n "$namespace" rollout restart deployment/external-dns || true
+          kubectl -n "$namespace" rollout status deployment/external-dns --timeout=5m
 
       - name: Dump sandbox ArgoCD diagnostics on failure
         if: failure() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox'
@@ -716,6 +797,14 @@ jobs:
           TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
           TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
           TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
+          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
+          TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
+          TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
+          TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
         run: terraform destroy -auto-approve -input=false
 
       - name: Cleanup sandbox AWS orphans after destroy
@@ -753,6 +842,14 @@ jobs:
           TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
           TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
           TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
+          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
+          TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
+          TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
+          TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
         run: terraform destroy -auto-approve -input=false
 
       - name: Fail if Terraform destroy did not complete

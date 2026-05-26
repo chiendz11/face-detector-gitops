@@ -1,516 +1,454 @@
-# Enterprise Hardening Summary
+# Tổng Kết Gia Cố Theo Hướng Enterprise
 
-This document records the main changes made to move this repository from a
-basic CI/CD setup toward an enterprise-oriented delivery platform.
+Tài liệu này ghi lại các thay đổi lớn giúp repo chuyển từ CI/CD cơ bản sang mô hình delivery có governance rõ hơn, gần với enterprise-grade nhưng vẫn phù hợp solo project.
 
-It focuses on:
+Trọng tâm:
 
-- trust boundaries between workflows
-- GitHub Actions permission hardening
-- policy-as-code adoption
-- infrastructure and supply-chain security controls
-- release provenance and artifact signing
+- tách trust boundary giữa PR untrusted và workflow trusted
+- giảm quyền mặc định trong GitHub Actions
+- đưa policy thành code
+- hardening hạ tầng và supply chain
+- giữ audit trail cho deploy, sandbox, release và DNS
 
-## Goals
+## 1. Mục Tiêu
 
-The hardening work was driven by five practical goals:
+Hardening trong repo hướng tới năm mục tiêu thực tế:
 
-1. Separate untrusted pull request validation from trusted publish and deploy flows.
-2. Reduce implicit trust in GitHub Actions by declaring explicit permissions and approvals.
-3. Turn governance rules into executable policy instead of scattered workflow logic.
-4. Improve software supply-chain evidence for images and release artifacts.
-5. Keep rollout safe by introducing advisory controls before hard gates where needed.
+1. Tách validation của PR khỏi publish/deploy flow có quyền cao.
+2. Không dựa vào implicit trust trong GitHub Actions.
+3. Biến governance rules thành policy có thể chạy tự động.
+4. Tạo evidence cho image, release, SBOM và attestation.
+5. Rollout an toàn: advisory trước, hard gate sau khi flow đã ổn.
 
-## 1. CI/CD Lanes Were Split By Trust Surface
+## 2. CI/CD Được Tách Theo Bề Mặt Tin Cậy
 
-The repository no longer treats all automation as one mixed pipeline. It is now
-split into dedicated lanes with different trust levels and responsibilities.
+Repo không còn coi mọi automation là một pipeline lẫn lộn. Các lane chính:
 
-### Application Verification
+### Kiểm Tra Ứng Dụng
 
-- `.github/workflows/app-ci.yml`
-- `.github/workflows/reusable-app-ci.yml`
+Files:
 
-Purpose:
+```text
+.github/workflows/app-ci.yml
+.github/workflows/reusable-app-ci.yml
+```
 
-- run pull request safe verification only
-- lint and test backend, frontend, and edge client
-- run dependency and code security checks
-- build images for verification only
-- run smoke e2e against the built images
+Mục đích:
 
-Enterprise value:
+- lint/test backend, frontend-admin, edge-client
+- dependency/security checks
+- build image để verify
+- chạy smoke e2e bằng compose
 
-- untrusted PR code does not get release-grade publish permissions
-- application verification is isolated from trusted deployment concerns
+Giá trị enterprise:
 
-### Application Release
+- PR code không có quyền publish release image
+- app verification tách khỏi deploy concerns
 
-- `.github/workflows/app-release.yml`
-- `.github/workflows/reusable-app-release.yml`
+### Phát Hành Ứng Dụng
 
-Purpose:
+Files:
 
-- publish images only from the trusted branch flow
-- sign release artifacts
-- generate release evidence and attestations
+```text
+.github/workflows/app-release.yml
+.github/workflows/reusable-app-release.yml
+```
 
-Enterprise value:
+Mục đích:
 
-- image publication is restricted to a trusted lane
-- release evidence is now generated from a controlled workflow instead of being implied by logs
+- publish images chỉ từ trusted branch flow
+- tạo SBOM/provenance evidence
+- sign artifacts/images
 
-### Infrastructure Verification
+Giá trị enterprise:
 
-- `.github/workflows/infra-ci.yml`
-- `.github/workflows/reusable-infra-ci.yml`
+- image publication chỉ chạy ở trusted lane
+- release có evidence rõ, không chỉ dựa vào logs
 
-Purpose:
+### Kiểm Tra Hạ Tầng
 
-- validate Terraform and Helm
-- run IaC security scanning
-- run IaC policy checks
+Files:
 
-Enterprise value:
+```text
+.github/workflows/infra-ci.yml
+.github/workflows/reusable-infra-ci.yml
+```
 
-- infrastructure changes are reviewed in a dedicated lane
-- IaC risk is surfaced before reaching apply workflows
+Mục đích:
 
-### Platform Governance
+- validate Terraform và Helm
+- chạy IaC security scanning
+- chạy policy-as-code
 
-- `.github/workflows/platform-ci.yml`
-- `.github/workflows/reusable-platform-ci.yml`
+Giá trị enterprise:
 
-Purpose:
+- infra risk được phát hiện trước apply
+- Terraform/Helm có lane riêng
+
+### Governance Nền Tảng
+
+Files:
+
+```text
+.github/workflows/platform-ci.yml
+.github/workflows/reusable-platform-ci.yml
+policies/
+```
+
+Mục đích:
 
 - validate workflow governance
-- lint workflow syntax
-- validate composite action manifests
-- enforce policy-as-code for GitHub automation surfaces
+- kiểm tra composite actions
+- kiểm tra rules liên quan trust boundary
 
-Enterprise value:
+Giá trị enterprise:
 
-- the control plane is validated separately from application runtime code
-- changes to workflows and actions are treated as security-sensitive changes
+- workflow/policy changes được coi là control-plane changes
+- tránh sửa workflow nguy hiểm mà không bị phát hiện
 
-## 2. Workflow Permission Hardening Was Standardized
+## 3. CI Gateway Tổng Hợp Required Check
 
-All workflows now declare top-level `permissions` explicitly.
+Repo dùng `CI Gateway / gateway` làm required check chính.
 
-Examples of workflows that were standardized:
+Lý do:
 
-- `.github/workflows/infrastructure.yml`
-- `.github/workflows/app-cd.yml`
-- `.github/workflows/terraform-plan.yml`
-- `.github/workflows/terraform-plan-reusable.yml`
-- `.github/workflows/sandbox-auto-apply.yml`
-- `.github/workflows/sandbox-auto-destroy.yml`
-- `.github/workflows/sandbox-devops-verify.yml`
-- `.github/workflows/sandbox-workflow-rd.yml`
-- `.github/workflows/sandbox-janitor.yml`
-- `.github/workflows/gitops-staging.yml`
-- `.github/workflows/gitops-production.yml`
-- `.github/workflows/reusable-app-release.yml`
+- backend/frontend/edge/nginx lane có thể skipped theo changed path
+- nếu require trực tiếp từng job, GitHub có thể chờ missing check
+- gateway luôn chạy và tổng hợp kết quả cuối
 
-What changed:
+Flow:
 
-- workflow-level default permissions were added
-- elevated scopes were left only on jobs that actually need them
-- `security-events: write` was added only where SARIF upload requires it
-- release lanes keep `id-token`, `attestations`, and `packages` only where needed
+```text
+PR opened/synchronize
+-> detect changed paths
+-> chạy lane cần thiết
+-> gateway tổng hợp
+-> report CI Gateway / gateway
+```
 
-Enterprise value:
+## 4. Sandbox Governance
 
-- easier auditability
-- less accidental privilege expansion
-- stronger least-privilege baseline for all automation
+Sandbox policy phân loại PR theo blast radius.
 
-## 3. Workflow Governance Was Upgraded From Script Logic To Policy-As-Code
+Các nhãn chính:
 
-The repository was already enforcing governance rules in CI, but the rules were
-embedded directly inside workflow logic. That meant policy and pipeline were too
-tightly coupled.
+- `sandbox-recommended`: bot khuyến nghị deploy sandbox.
+- `sandbox-required`: hard gate cho critical changes.
+- `deploy-sandbox`: owner cho phép deploy sandbox thật.
+- `sandbox-validated`: bot xác nhận sandbox apply/bootstrap/smoke pass.
+- `skip-sandbox-approved`: owner waiver rõ ràng.
+- `allow-self-approve`: review governance, không bypass sandbox.
 
-This has now been moved closer to enterprise-grade Policy as Code.
+Nguyên tắc:
 
-### New Policy Bundle Layout
+```text
+self-approve = review governance
+deploy-sandbox = environment governance
+skip-sandbox-approved = risk waiver governance
+```
 
-- `policies/github/workflows/policy.rego`
-- `policies/github/actions/policy.rego`
-- `policies/terraform/policy.rego`
-- `policies/data/exceptions.yaml`
-- `.github/actions/setup-conftest/action.yml`
+Không trộn ba quyết định này vào cùng một label.
 
-### What Is Enforced For GitHub Workflows
+## 5. Sandbox Auto Apply Và Auto Destroy
 
-Current workflow policy checks include:
+Auto apply chỉ chạy khi:
 
-- top-level `permissions` must exist
-- mutable action refs such as `@main`, `@master`, `@head`, and `@latest` are blocked
+- PR cùng repo
+- không draft
+- actor/label trusted
+- owner gắn `deploy-sandbox` hoặc `deploy-preview`
+- CI gates liên quan đã xanh
+- quota cho owner còn trống
 
-### What Is Enforced For Composite Actions
+Auto destroy chạy khi:
 
-Current composite action policy checks include:
+- PR closed/merged
+- PR chuyển draft
+- deploy label cuối cùng bị gỡ
+- owner gắn `teardown-sandbox`
+- janitor phát hiện sandbox quá hạn hoặc state lệch
 
-- `name` must be present
-- `description` must be present
-- `runs.using` must be declared
-- every composite `run` step must declare `shell`
-- mutable action refs are blocked
+Destroy chạy từ trusted workflow trên default branch, không chạy workflow code từ PR branch.
 
-### Why This Is Better Than Workflow-Embedded Governance
+## 6. GitHub OIDC Và IAM Role Split
 
-Before:
+Repo dùng GitHub OIDC để assume AWS roles, không dùng long-lived IAM user keys.
 
-- governance lived inside one workflow as custom Python logic
-- rules were harder to reuse, version, and reason about
+Role legacy:
 
-Now:
+```text
+Role-Sandbox
+```
 
-- governance rules live in Rego policies
-- CI only calls the policy engine
-- exceptions can be declared in a dedicated data file
-- policy evolution can move from advisory to hard fail in a controlled way
+Role split theo nhiệm vụ:
 
-Enterprise value:
+```text
+Role-Sandbox-Plan
+Role-Sandbox-Apply
+Role-Sandbox-Destroy
+Role-Sandbox-AppDeploy
+```
 
-- governance becomes portable and reviewable
-- policy can be versioned independently from workflow glue
-- exception handling becomes explicit instead of hidden in scripts
+Ý nghĩa:
 
-## 4. Infrastructure Policy-As-Code Was Added In Advisory Mode
+- plan chỉ cần quyền đọc
+- apply cần quyền tạo/update sandbox infra
+- destroy cần quyền xóa sandbox đúng scope
+- appdeploy cần quyền bootstrap/deploy app vào EKS
 
-Infrastructure policy checks now run through Conftest in addition to Checkov.
+`Role-Bootstrap` quản lý lớp nền móng như IAM roles, trust policy và state backend. Nếu sau này chọn Route53 thì role này cũng có thể quản lý hosted zone, ACM certificate, DNSSEC và query logging, nhưng đường mặc định hiện tại là Cloudflare DNS.
 
-Relevant files:
+## 7. Terraform Bootstrap Là Source Of Truth
+
+Sửa IAM trên AWS Console có thể chạy ngay nhưng dễ drift.
+
+Flow chuẩn:
+
+```text
+PR đổi terraform/bootstrap
+-> CI validate
+-> merge master
+-> owner chạy Terraform Bootstrap Apply
+-> GitHub Environment bootstrap yêu cầu approval
+-> workflow assume Role-Bootstrap
+-> terraform apply cập nhật AWS
+```
+
+GitHub secret chỉ lưu ARN như con trỏ runtime. Quyền thật nằm trong IAM policy trên AWS, và policy đó nên được quản lý bằng Terraform.
+
+## 8. Stable Public DNS Cho Edge Và Admin
+
+Repo hỗ trợ stable DNS bằng:
+
+- domain lấy từ GitHub Student Developer Pack
+- Cloudflare DNS free
+- ExternalDNS trong EKS với provider `cloudflare`
+- Cloudflare API token đặt trong GitHub Secret và Kubernetes Secret
+- Helm values `publicDns` và `publicTls`
+- Route53/ACM là nhánh optional nếu sau này muốn AWS quản lý DNS/TLS
+
+URL mong muốn:
+
+```text
+production: https://face.example.com
+staging:    https://staging.face.example.com
+sandbox:    https://sandbox-pr-123.face.example.com
+```
+
+Edge device không hardcode URL trong code. Edge đọc:
+
+```text
+API_BASE_URL
+```
+
+Chi tiết vận hành nằm ở:
+
+```text
+docs/public-dns-gitops-edge-operations.md
+```
+
+## 9. ArgoCD Và GitOps Promotion
+
+Staging:
+
+```text
+merge master
+-> App Release publish images lên GHCR
+-> GitOps Staging Promotion resolve digest
+-> update values-staging.yaml
+-> commit [skip ci]
+-> ArgoCD sync staging
+```
+
+Production:
+
+```text
+publish GitHub Release
+-> GitOps Production Promotion chạy
+-> environment production yêu cầu approval
+-> owner/admin approve
+-> workflow resolve digest
+-> update values-production.yaml
+-> ArgoCD thấy Git đổi nhưng không auto-sync production
+-> trusted operator manual sync face-detector-production trong ArgoCD
+```
+
+Điểm quan trọng:
+
+- ArgoCD sync theo Git, không theo tag mới trên GHCR.
+- Production không nên dùng `latest`.
+- values file nên dùng immutable digest.
+- ArgoCD Application không dùng `project: default` lâu dài. Repo dùng AppProject riêng `face-detector` để giới hạn:
+  - repo Git được phép sync
+  - namespace đích
+  - loại Kubernetes resource được phép tạo
+  - không cho chart tự quản lý Secret ứng dụng
+- Repo credential của ArgoCD ưu tiên GitHub App hoặc read-only deploy key. `ARGOCD_REPO_TOKEN` chỉ là fallback legacy, không phải đường vận hành khuyến nghị.
+
+Flow bootstrap ArgoCD hiện tại:
 
-- `.github/workflows/reusable-infra-ci.yml`
-- `policies/terraform/policy.rego`
-- `policies/data/exceptions.yaml`
+```text
+app-cd workflow chạy
+-> tạo/cập nhật ArgoCD repo credential
+   -> ưu tiên ARGOCD_GITHUB_APP_*
+   -> nếu không có thì dùng ARGOCD_REPO_DEPLOY_KEY
+   -> nếu không có nữa mới fallback ARGOCD_REPO_TOKEN
+-> apply AppProject face-detector
+-> apply Application staging/production
+-> ArgoCD chỉ sync trong boundary của AppProject
+```
 
-Current advisory policies flag the following patterns:
+Ý nghĩa enterprise:
 
-- EKS public control-plane endpoint enabled
-- S3 buckets using `force_destroy = true`
-- RDS instances using `skip_final_snapshot = true`
-- public ingress on sensitive ports where applicable
+- PAT rộng không còn là lựa chọn chính.
+- Nếu dùng deploy key, key chỉ nên có quyền read-only đúng repo này.
+- Nếu dùng GitHub App, installation chỉ nên cấp quyền read repository contents cho đúng repo.
+- AppProject chặn việc Application vô tình sync sang namespace/repo/resource ngoài phạm vi thiết kế.
 
-Why advisory first:
+Hardening ArgoCD control plane:
 
-- the current Terraform still contains patterns that are operationally useful but risky
-- surfacing warnings first avoids turning the pipeline red before the team agrees on the target posture
-- the exception model is already in place for later tightening
-
-Current local validation result:
-
-- the policies execute successfully
-- current Terraform emits advisory warnings rather than failures
-
-Enterprise value:
-
-- infrastructure risk becomes visible early
-- future hard gates can be introduced rule by rule without redesigning the lane
-
-## 5. Infrastructure Security Scanning Was Expanded
-
-Infra CI now includes advisory Checkov scanning with artifact and code-scanning output.
-
-Relevant files:
-
-- `.github/workflows/infra-ci.yml`
-- `.github/workflows/reusable-infra-ci.yml`
-
-What changed:
-
-- Checkov runs in `--soft-fail` mode
-- SARIF output is produced
-- SARIF is uploaded as an artifact
-- SARIF is also uploaded to GitHub code scanning when allowed by the event context
-
-Enterprise value:
-
-- findings are centralized in code scanning instead of buried in logs
-- the organization gets visibility before deciding which findings should block merges
-
-## 6. Platform CI Now Validates Governance Surfaces As First-Class Inputs
-
-Platform CI path filters now include policy files.
-
-Relevant file:
-
-- `.github/workflows/platform-ci.yml`
-
-What changed:
-
-- policy changes trigger platform governance checks
-- Conftest setup is shared through a pinned composite action
-- governance rules for workflows and composite actions are executed consistently
-
-Enterprise value:
-
-- governance code is treated as a protected control-plane surface
-- policy drift is caught by the same lane that owns workflow governance
-
-## 7. CODEOWNERS Was Updated For Trust Segmentation
-
-Relevant file:
-
-- `.github/CODEOWNERS`
-
-New governance ownership was added for:
-
-- `.github/actions/setup-conftest/`
-- `policies/github/`
-- `policies/terraform/`
-- `policies/data/`
-- image save/load composite actions
-
-Enterprise value:
-
-- policy and platform changes now have explicit ownership
-- review responsibility is aligned with the security surface being changed
-
-## 8. App CI Supply-Chain Verification Was Strengthened
-
-Relevant files:
-
-- `.github/workflows/app-ci.yml`
-- `.github/workflows/reusable-app-ci.yml`
-- `.github/actions/load-images/action.yml`
-- `.github/actions/save-images/action.yml`
-
-What changed:
-
-- App CI now uploads Trivy SARIF to code scanning
-- Docker images are built once, saved as archives, then reloaded for smoke e2e
-- the e2e job no longer rebuilds a potentially different image
-
-Enterprise value:
-
-- verification becomes more reproducible
-- build output used in security scan and smoke e2e is the same artifact
-- supply-chain evidence is more trustworthy because the same image bits are reused
-
-## 9. Release Provenance And Artifact Signing Were Tightened
-
-This is one of the biggest enterprise upgrades in the release lane.
-
-Relevant files:
-
-- `.github/workflows/app-release.yml`
-- `.github/workflows/reusable-app-release.yml`
-- `.github/actions/sign-images/action.yml`
-
-### What Was Already Present Before Tightening
-
-The release lane already had:
-
-- trusted publish-only workflow separation
-- Cosign image signing
-- SBOM generation
-- SBOM attachment to released images
-
-### What Was Added Now
-
-#### Release provenance artifact
-
-`reusable-app-release.yml` now emits:
-
-- `.artifacts/release-provenance.json`
-
-This records:
-
-- repository
-- workflow name
-- run id and run attempt
-- git ref and SHA
-- image tag
-- published image list and digests
-
-#### GitHub artifact attestations
-
-The trusted release lane generates GitHub-native attestations via `actions/attest@v4` when
-the repository supports it. A `check-attestation-support` capability gate (using the GitHub
-REST API) detects private user-owned repositories and gracefully skips attestation with a
-warning rather than failing the release. This ensures the lane is portable across personal,
-organization, and enterprise account types without workflow changes.
-
-The caller workflow grants:
-
-- `attestations: write`
-- `id-token: write`
-- `packages: write`
-
-Cosign-based signing and SBOM attestation run unconditionally regardless of GitHub
-attestation capability.
-
-#### Post-attestation verification
-
-The trusted release lane verifies Cosign signatures and SBOM attestations after signing.
-GitHub attestation verification (`gh attestation verify`) applies only when the capability
-gate allows it.
-
-#### Post-sign verification
-
-The signing action now verifies:
-
-- Cosign image signature
-- Cosign SBOM attestation
-
-using the expected GitHub Actions OIDC issuer and certificate identity pattern.
-
-### Why This Matters
-
-This moves the release lane from:
-
-- "images were pushed and signed"
-
-to:
-
-- "images were pushed by a trusted workflow, signed, attested, and verified with traceable provenance"
-
-Enterprise value:
-
-- stronger supply-chain integrity
-- better audit evidence for releases
-- easier downstream verification in promotion or deployment systems
-
-## 10. Trusted Sandbox And Admin Lanes Were Further Normalized
-
-Relevant files include:
-
-- `.github/workflows/infrastructure.yml`
-- `.github/workflows/sandbox-devops-verify.yml`
-- `.github/workflows/sandbox-workflow-rd.yml`
-- `.github/workflows/sandbox-auto-apply.yml`
-- `.github/workflows/sandbox-auto-destroy.yml`
-- `.github/workflows/sandbox-janitor.yml`
-
-What changed across the trusted/manual lanes:
-
-- top-level permissions were standardized
-- admin and workflow-R&D lanes continue to require protected environments and approval gates
-- trusted child workflows are reused instead of duplicating deployment logic
-
-Enterprise value:
-
-- manual or privileged flows are more uniform
-- security review becomes easier because trusted lanes share the same foundations
-
-## 11. Runtime Image Hardening Was Improved
-
-Relevant runtime surfaces:
-
-- `frontend-admin/Dockerfile`
-- `nginx/Dockerfile`
-- `edge-client/Dockerfile`
-
-What changed:
-
-- base OS packages are upgraded during image build
-
-Enterprise value:
-
-- fewer known OS-level CVEs in application container images
-- better Trivy scan results and lower release risk
-
-## 12. App CI Dependency License Governance Was Added
-
-Relevant files:
-
-- `.github/workflows/reusable-app-ci.yml`
-- `policies/licenses/policy.json`
-- `scripts/check_dependency_licenses.py`
-
-What changed:
-
-- App CI now generates license inventories for backend, edge-client, and frontend-admin dependencies
-- a repository-owned policy file now classifies licenses into allow, review, and disallow buckets
-- the checker blocks unknown or explicitly disallowed licenses before merge
-- the private `frontend-admin` workspace package is ignored explicitly so the gate does not fail on the repo's own unpublished package metadata
-- App CI uploads the inventory plus summary report as a build artifact for review evidence
-
-Enterprise value:
-
-- dependency license decisions are explicit instead of ad hoc
-- legal or procurement review can focus on a smaller review-only queue
-- merge-time enforcement catches license drift before release packaging
-
-## 13. Sandbox Reviewer Decision Rules Were Written Down
-
-Relevant files:
-
-- `docs/sandbox-decision-matrix.md`
-- `README.md`
-- `.github/workflows/sandbox-auto-apply.yml`
-
-What changed:
-
-- reviewer-facing guidance now defines when a PR belongs in the heavy sandbox lane versus the fast non-sandbox lane
-- the guidance documents that `deploy-sandbox` and `deploy-preview` stay reviewer-controlled labels, not an automatic preview for every PR
-- the written rules now capture the green-PR-lanes prerequisite, one-sandbox-per-owner quota, and mandatory auto-destroy lifecycle
-
-Enterprise value:
-
-- sandbox usage becomes more predictable and auditable
-- expensive PR environments are reserved for changes with real blast radius
-- the written policy matches the automation already enforced by the repository
-
-## Current State
-
-The repository is now beyond a simple workflow-based CI/CD setup and is moving
-toward an enterprise operating model.
-
-### Implemented
-
-- lane split by trust boundary
-- top-level workflow permission hardening
-- platform governance hard gates for workflows and composite actions
-- policy-as-code structure with Conftest and Rego
-- infra advisory PaC and advisory Checkov scanning
-- code-scanning integration for Trivy and Checkov
-- reproducible build-once image verification in App CI
-- release provenance artifact generation
-- GitHub build provenance and SBOM attestations in the trusted release lane
-- Cosign sign plus verification of signatures and attestations
-- GitHub attestation capability gate for portable private/org/enterprise support
-- SHA-pinned external actions across all workflow and composite action files
-
-### Still Candidate For Future Tightening
-
-- promote selected infra warnings from advisory to hard fail
-- add exception expiry dates for temporary risk acceptance
-- verify provenance and signatures again at GitOps promotion or deploy time
-- add richer policy coverage for Helm, container image metadata, and release rules
-- add GHCR image lifecycle cleanup to prune SHA-tagged images and Cosign signature tags
-
-## Recommended Next Steps
-
-1. Convert selected Terraform warnings to hard fails after the team agrees on exceptions.
-2. Add expiration dates to policy exceptions in `policies/data/exceptions.yaml`.
-3. Verify signed attestations again in promotion or deployment workflows.
-4. Extend PaC to Helm chart policies and release metadata rules.
-
-## Files Added Or Introduced As Part Of This Step
-
-- `docs/enterprise-hardening.md`
-- `.github/actions/setup-conftest/action.yml`
-- `policies/github/workflows/policy.rego`
-- `policies/github/actions/policy.rego`
-- `policies/terraform/policy.rego`
-- `policies/data/exceptions.yaml`
-
-## Summary
-
-The repository now has the foundations of an enterprise-grade delivery system:
-
-- separate trusted and untrusted lanes
-- explicit least-privilege permissions
-- executable governance policies
-- advisory infrastructure risk policies
-- stronger supply-chain evidence
-- release signing, attestation, and verification
-
-The major shift is architectural, not cosmetic: governance and release trust are
-no longer based only on workflow convention. They are increasingly encoded as
-machine-verifiable rules and signed release evidence.
+```text
+ArgoCD server
+-> service type ClusterIP
+-> không public expose UI mặc định
+-> server.insecure=false
+-> log format JSON
+-> RBAC enabled
+-> exec disabled
+-> RBAC log enforcement enabled
+-> notifications controller enabled
+```
+
+Production sync policy:
+
+```text
+staging/sandbox
+-> auto sync, prune, selfHeal
+
+production
+-> không auto sync
+-> AppProject có sync window deny auto toàn thời gian cho face-detector-production
+-> manualSync=true
+-> owner/admin approve GitHub production promotion trước
+-> trusted operator sync thủ công trong ArgoCD sau
+```
+
+SSO/RBAC production:
+
+- `ARGOCD_OIDC_CONFIG` là GitHub secret để bật OIDC config cho ArgoCD.
+- `ARGOCD_ADMIN_RBAC_SUBJECTS` là GitHub variable dạng JSON list, ví dụ `["face-admins"]` hoặc `["admin@example.com"]`.
+- Khi production có OIDC config, local admin user sẽ bị tắt để tránh dùng account mặc định lâu dài.
+- Nếu chưa có OIDC config, local admin vẫn còn để tránh tự khóa khỏi cluster; đây là trạng thái bootstrap, không phải mục tiêu production lâu dài.
+
+Notifications:
+
+- `ARGOCD_NOTIFICATIONS_RECIPIENTS` là GitHub variable dạng JSON list, ví dụ `["slack:platform"]`.
+- Controller notifications đã bật, nhưng chỉ gửi ra ngoài khi đã cấu hình recipients và service secret tương ứng.
+
+## 10. Supply Chain Controls
+
+Repo đã có các lớp evidence:
+
+- SBOM
+- provenance
+- image signing
+- attestation
+- GHCR immutable SHA tags
+- CodeQL/Trivy/Checkov integration
+
+Mục tiêu là biết image nào được build từ commit nào, workflow nào, và evidence nào đi kèm.
+
+## 11. Policy-As-Code
+
+Policy nằm trong:
+
+```text
+policies/
+```
+
+Các nhóm policy:
+
+- GitHub workflow governance
+- composite action governance
+- Terraform policy
+- Kubernetes manifest policy
+- exceptions data
+
+Giá trị:
+
+- rule nằm trong repo
+- thay đổi rule đi qua PR
+- CI có thể enforce hoặc advisory
+- audit dễ hơn so với rule nằm rải rác trong workflow script
+
+## 12. CODEOWNERS Và Solo Maintainer
+
+Với solo maintainer:
+
+- dùng CODEOWNERS làm metadata/audit layer
+- không bật native code owner review gate nếu chưa có reviewer thứ hai
+- custom policy có thể đọc CODEOWNERS để xác định owner
+- self-approve phải explicit bằng label và actor trusted
+
+Khi có team:
+
+- bật code owner review cho control-plane paths
+- tách team dev, devops, security
+- hạn chế bypass actors
+
+## 13. Trạng Thái Đã Implement
+
+Đã có:
+
+- lane split theo trust boundary
+- explicit workflow permissions
+- CI Gateway aggregator
+- sandbox policy hard gate
+- sandbox auto apply/destroy/janitor
+- GitHub OIDC role assumption
+- task-scoped sandbox role support
+- Terraform bootstrap workflow có approval
+- ArgoCD GitOps promotion bằng digest
+- production promotion approval gate
+- stable public DNS design bằng Cloudflare + ExternalDNS
+- policy-as-code với Conftest/Rego
+- Checkov/Trivy/security scans
+- release evidence, SBOM, signing, attestation
+- SHA-pinned external actions
+- docs vận hành DNS/GitOps/edge/IAM roles
+
+## 14. Việc Còn Có Thể Hardening Tiếp
+
+- Xóa fallback `AWS_ROLE_SANDBOX_ARN` sau khi 4 scoped roles đã chạy ổn end-to-end.
+- Chuyển thêm advisory IaC findings thành hard fail khi đã thống nhất exceptions.
+- Thêm expiry date cho temporary exceptions.
+- Verify signatures/attestations ở GitOps promotion hoặc deploy time.
+- Bổ sung policy cho Helm, image metadata và release rules.
+- Thêm GHCR image lifecycle cleanup.
+- Hoàn thiện production DNS/TLS sau khi domain thật đã add vào Cloudflare, nameserver đã trỏ về Cloudflare và TLS path đã được chọn.
+
+## 15. Bước Tiếp Theo Khuyến Nghị
+
+1. Lấy domain qua GitHub Student Developer Pack và add vào Cloudflare.
+2. Trỏ nameserver ở registrar về Cloudflare.
+3. Tạo Cloudflare API token chỉ có `Zone:Read` và `DNS:Edit` cho đúng zone.
+4. Set `FACE_DETECTOR_BASE_DOMAIN`, `FACE_DETECTOR_DNS_PROVIDER=cloudflare`, `CLOUDFLARE_ZONE_ID` và `CLOUDFLARE_API_TOKEN`.
+5. Bật `FACE_DETECTOR_PUBLIC_DNS_ENABLED=true`.
+6. Test sandbox qua stable DNS.
+7. Chọn TLS path: ACM thủ công với DNS validation trong Cloudflare, hoặc cert-manager + Let's Encrypt bằng PR riêng.
+8. Sau khi scoped roles ổn, xóa legacy sandbox role fallback.
+
+## 16. Tổng Kết
+
+Repo đã vượt qua mức CI/CD đơn giản. Hệ thống hiện có:
+
+- trust boundary rõ ràng
+- workflow permissions tường minh
+- policy-as-code
+- sandbox governance có audit
+- OIDC thay cho IAM user keys
+- GitOps promotion bằng digest
+- DNS ổn định cho edge/admin
+- release evidence và supply-chain controls
+
+Điểm quan trọng nhất: governance không còn chỉ nằm trong thói quen vận hành. Nó đã được đưa vào workflow, policy, Terraform và tài liệu.

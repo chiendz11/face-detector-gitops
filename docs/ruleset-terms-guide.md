@@ -1,132 +1,217 @@
-# Ruleset Terms Guide (Easy English -> Vietnamese)
+# Giải Thích Thuật Ngữ Ruleset, Branch Protection Và CI
 
-Tai lieu nay giai thich cac thuat ngu tieng Anh lien quan den GitHub Rulesets, Branch Protection va CI checks trong repo Face_dectector.
+Tài liệu này giải thích các thuật ngữ hay gặp khi debug GitHub Rulesets, Branch Protection và CI checks trong repo `Face_dectector`.
 
-## 1) Nhom khai niem nen tang
+## 1. Nhóm Khái Niệm Nền Tảng
 
 ### Ruleset
-- Nghia: Bo quy tac bao ve branch (nhu master/main).
-- Trong repo nay: Co 2 ruleset chinh la Shield va Flow.
 
-### Branch protection
-- Nghia: Co che chan merge neu chua dat dieu kien.
-- Luu y: Ruleset la cach moi/manh hon de thay the branch protection co dien.
+Ruleset là bộ quy tắc bảo vệ branch hoặc tag.
 
-### Pull request (PR)
-- Nghia: De xuat gop code tu branch A vao branch B.
-- Quy tac review/check thuong duoc ap dung tren PR.
+Ví dụ: ruleset áp vào `master` có thể yêu cầu PR, required checks, review, hoặc chặn direct push.
 
-## 2) Nhom check va trang thai
+### Branch Protection
 
-### Status check
-- Nghia: Ket qua kiem tra bat buoc truoc khi merge (CI, security, policy...).
+Branch Protection là cơ chế bảo vệ branch kiểu cũ của GitHub.
 
-### Required status check
-- Nghia: Check bat buoc phai dat trang thai hop le (thuong la success).
-- Trong repo nay: Context duoc require la CI Gateway / gateway.
+Ruleset là cơ chế mới hơn, linh hoạt hơn. Repo nên dùng Ruleset cho policy enterprise, nhưng vẫn cần hiểu Branch Protection vì UI GitHub có thể hiển thị cả hai.
 
-### Context name
-- Nghia: Ten check dung de ruleset so khop.
-- Cuc ky quan trong: Match theo ten chinh xac (exact match), khong match mo ho.
+### Pull Request
 
-### Check run
-- Nghia: Mot lan chay cua 1 job.
-- Vi du: job gateway trong workflow CI Gateway.
+Pull request, thường gọi là PR, là đề xuất merge code từ branch này vào branch khác.
 
-### Check suite
-- Nghia: Tap hop cac check run cua mot lan kich hoat workflow.
+Review, CI, security scan và policy checks thường chạy trên PR.
+
+## 2. Nhóm Check Và Trạng Thái
+
+### Status Check
+
+Status check là kết quả kiểm tra gắn vào commit hoặc PR.
+
+Ví dụ:
+
+```text
+CI Gateway / gateway
+Sandbox Policy / evaluate
+Repo Security / secret-scan
+```
+
+### Required Status Check
+
+Required status check là check bắt buộc phải pass trước khi merge.
+
+Trong repo này, context quan trọng nhất nên require là:
+
+```text
+CI Gateway / gateway
+```
+
+### Context Name
+
+Context name là tên chính xác của check mà ruleset dùng để so khớp.
+
+Tên này phải match exact. Nếu ruleset require `CI Gateway / gateway` nhưng workflow thật report `gateway`, GitHub sẽ chờ một check không bao giờ xuất hiện.
+
+### Check Run
+
+Check run là một lần chạy của một job.
+
+Ví dụ: job `gateway` trong workflow `CI Gateway`.
+
+### Check Suite
+
+Check suite là tập hợp các check run thuộc một lần workflow được trigger.
 
 ### Expected
-- Nghia: Ruleset dang doi check context duoc report cho commit hien tai.
-- Thuong xuat hien khi workflow vua duoc trigger.
 
-### Pending / In progress / Queued
-- Pending: Dang chua xong.
-- In progress: Dang chay.
-- Queued: Dang cho runner tai nguyen.
+`Expected` nghĩa là GitHub đang chờ check context được report cho commit hiện tại.
 
-### Success / Failure / Cancelled / Skipped
-- Success: Dat.
-- Failure: Khong dat.
-- Cancelled: Bi huy.
-- Skipped: Khong can chay (do dieu kien if/path).
+Nếu check bị expected mãi, thường là do:
 
-## 3) Nhom review va merge policy
+- required context name sai
+- workflow không trigger cho changed path đó
+- job bị skip nhưng lại bị require trực tiếp
+- commit mới reset status
 
-### Required approving review count
-- Nghia: So luong approve toi thieu.
-- Vi du: 1 = can it nhat 1 nguoi co quyen write approve.
+### Pending, In Progress, Queued
 
-### Code owner review
-- Nghia: Can review tu nguoi duoc gan trong CODEOWNERS cho file bi thay doi.
+- `Pending`: chưa có kết quả cuối.
+- `In progress`: đang chạy.
+- `Queued`: đang chờ runner.
 
-### Dismiss stale reviews on push
-- Nghia: Neu co commit moi, approve cu bi vo hieu va can review lai.
+### Success, Failure, Cancelled, Skipped
 
-### Required review thread resolution
-- Nghia: Tat ca thread comment dang open phai duoc resolve.
+- `Success`: pass.
+- `Failure`: fail.
+- `Cancelled`: bị hủy.
+- `Skipped`: bị bỏ qua theo điều kiện `if` hoặc path filter.
 
-### Mergeable vs Blocked
-- Mergeable: Co the merge ve mat ky thuat.
-- Blocked: Dang bi policy chan (review/check/ruleset).
+`Skipped` không nhất thiết là lỗi. Nhưng không nên require trực tiếp một job có thể skipped theo domain.
 
-## 4) Nhom ruleset tham so nang cao
+## 3. Nhóm Review Và Merge Policy
+
+### Required Approving Review Count
+
+Số lượng approve tối thiểu cần có trước khi merge.
+
+Ví dụ `1` nghĩa là cần ít nhất một reviewer hợp lệ approve.
+
+### Code Owner Review
+
+Yêu cầu review từ người hoặc team được khai báo trong `CODEOWNERS` cho file thay đổi.
+
+Với solo maintainer, native GitHub code owner review có thể gây self-block. Khi đó nên dùng CODEOWNERS làm metadata cho custom policy thay vì native enforcement.
+
+### Dismiss Stale Reviews On Push
+
+Nếu có commit mới, approve cũ bị vô hiệu và cần review lại.
+
+### Required Review Thread Resolution
+
+Tất cả thread comment đang open phải được resolve trước khi merge.
+
+### Mergeable Và Blocked
+
+- `Mergeable`: về mặt kỹ thuật có thể merge.
+- `Blocked`: đang bị rule, review, required check, hoặc sandbox policy chặn.
+
+## 4. Nhóm Tham Số Ruleset Nâng Cao
 
 ### strict_required_status_checks_policy
-- true: Yeu cau branch phai up-to-date rat chat voi base truoc merge.
-- false: Linh hoat hon, giam tinh trang UI bao pending tre.
+
+- `true`: branch phải up-to-date rất chặt với base trước khi merge.
+- `false`: linh hoạt hơn, giảm tình trạng pending/reset quá thường xuyên.
 
 ### do_not_enforce_on_create
-- Nghia: Co bo qua enforce ngay luc tao branch/PR hay khong.
+
+Quy định có enforce ngay lúc tạo branch hay không.
 
 ### bypass_actors
-- Nghia: Nhom/role duoc phep bypass ruleset.
-- Trong repo nay: Admin role co bypass_mode = always.
+
+Danh sách actor được phép bypass ruleset.
+
+Nên giới hạn cực hẹp và chỉ dùng cho break-glass.
 
 ### bypass_mode = always
-- Nghia: Co the merge bo qua cac rule khi can (co trach nhiem).
 
-## 5) Nhom event va trigger Actions
+Actor trong bypass list có thể bỏ qua rule khi cần. Đây là quyền nhạy cảm và phải có trách nhiệm audit.
+
+## 5. Nhóm Event Và Trigger GitHub Actions
 
 ### pull_request
-- Nghia: Workflow chay khi PR co su kien (opened, synchronize, reopened...).
+
+Workflow chạy khi PR có event như `opened`, `synchronize`, `reopened`.
+
+Đây là context an toàn hơn cho code từ PR.
 
 ### pull_request_target
-- Nghia: Chay trong context cua base repo (nhay cam hon ve security).
-- Thuong dung cho automation can quyen cao hon, vi du auto-merge Dependabot.
+
+Workflow chạy trong context của base repository. Context này có quyền cao hơn nên phải cẩn thận.
+
+Repo này dùng `pull_request_target` cho các parent workflow cần policy gate, label governance, hoặc sandbox orchestration.
 
 ### workflow_call
-- Nghia: Workflow tai su dung duoc goi tu workflow khac.
 
-## 6) Cac hieu nham pho bien
+Workflow có thể được gọi lại từ workflow khác.
 
-### Hieu nham 1: "Da thay xanh o duoi, sao tren van pending?"
-- Nguyen nhan thuong gap: Do tre dong bo UI hoac check context vua duoc reset theo commit moi.
-- Cach xac minh nhanh: dung gh pr checks <pr> de xem trang thai backend thuc.
+Repo này dùng reusable workflows để giữ trusted workflow definition trên default branch.
 
-### Hieu nham 2: "Pending la do fail"
-- Khong dung. Pending chi la chua hoan tat report cho context required.
+## 6. Hiểu Nhầm Phổ Biến
 
-### Hieu nham 3: "Skipped la loi"
-- Khong dung. Skipped co the la hanh vi mong doi theo dieu kien if/path.
+### Đã xanh ở dưới nhưng trên vẫn pending
 
-## 7) Mapping nhanh cho repo Face_dectector
+Nguyên nhân thường gặp:
 
-- Required check chinh cho ruleset: CI Gateway / gateway
-- App lane: verify-app (co the skipped neu khong touch app files)
-- Platform lane: verify-platform
-- Infra lane: verify-infra (co the skipped neu khong touch infra files)
-- Final gate: gateway (tong hop ket qua va enforce)
+- UI GitHub sync chậm
+- check context vừa reset do commit mới
+- ruleset require một context khác với context thật
 
-## 8) Checklist debug nhanh khi thay pending lau
+Xác minh bằng:
 
-1. Xac minh backend check:
-   - gh pr checks <pr-number> --repo chiendz11/Face_dectector
-2. Xem rollup chi tiet:
-   - gh pr view <pr-number> --json statusCheckRollup,mergeStateStatus
-3. Neu can, xem check-runs tren dung head SHA:
-   - GET /commits/<sha>/check-runs
-4. Neu backend xanh ma UI con tre:
-   - hard refresh PR page
-5. Neu bi block boi review (khong phai check):
-   - xu ly approve hoac dung admin bypass (theo chinh sach team)
+```powershell
+gh pr checks <pr-number> --repo chiendz11/Face_dectector
+```
+
+### Pending Không Đồng Nghĩa Fail
+
+`Pending` chỉ nghĩa là chưa có kết quả cuối. Nó khác `Failure`.
+
+### Skipped Không Đồng Nghĩa Lỗi
+
+Job skipped có thể là đúng nếu changed path không thuộc domain của job đó.
+
+Vì vậy branch protection nên require `CI Gateway / gateway`, không require từng job domain như backend/frontend/edge/nginx.
+
+## 7. Mapping Nhanh Cho Repo
+
+- Required check chính: `CI Gateway / gateway`
+- App lane: `verify-app`
+- Platform lane: `verify-platform`
+- Infra lane: `verify-infra`
+- Sandbox policy: `Sandbox Policy / evaluate`
+- Secret scan: `Repo Security / secret-scan`
+- Final gate: `gateway`
+
+## 8. Checklist Debug Pending Lâu
+
+1. Xem trạng thái backend checks:
+
+```powershell
+gh pr checks <pr-number> --repo chiendz11/Face_dectector
+```
+
+2. Xem rollup và merge state:
+
+```powershell
+gh pr view <pr-number> --repo chiendz11/Face_dectector --json statusCheckRollup,mergeStateStatus
+```
+
+3. Nếu nghi required context sai, xem check-runs của head SHA:
+
+```text
+GET /repos/<owner>/<repo>/commits/<sha>/check-runs
+```
+
+4. Nếu backend xanh nhưng UI chưa cập nhật, hard refresh trang PR.
+
+5. Nếu bị block bởi review, xử lý approval hoặc dùng admin bypass theo policy đã định.

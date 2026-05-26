@@ -1,41 +1,41 @@
-# Face Detector For Office Access Control
+# Face Detector Cho Kiểm Soát Ra Vào Văn Phòng
 
-This repository is a practical starter architecture for a face-recognition
-access-control system in a small company. The target scenario is realistic:
-fewer than 100 employees, one or a few entrance gates, one small server-side
-environment managed either with Docker Compose or EKS, and one or more local
-edge devices near the cameras.
+Repo này là kiến trúc starter thực tế cho hệ thống nhận diện khuôn mặt dùng trong kiểm soát ra vào ở công ty nhỏ.
 
-## Deployment Model
+Kịch bản mục tiêu:
 
-- `edge-client/`: kiosk-side application at the entrance. This is the real
-  user-facing interface for the security guard or employee.
-- `backend/`: FastAPI APIs, business logic, recognition pipeline, and service
-  integration for SQL, object storage, vector search, and background jobs.
-- `frontend-admin/`: admin panel for employee management, token-bound
-  live-camera face enrollment, threshold tuning, role management, and audit
-  review. It is served at `/admin/`; enrollment capture is a module inside this
-  app and uses short-lived enrollment session tokens.
-- `nginx/`: reverse proxy that exposes `/admin/` and `/api/`.
-- `docker-compose.yml`: base stack contract shared by all environments.
-- `docker-compose.dev.yml`: local development override (builds images and brings db, redis, minio).
-- `docker-compose.ci.yml`: CI override (uses prebuilt images and CI-specific runtime flags).
-- `docker-compose.edge.yml`: edge-device stack.
-- `deploy/`: Helm chart plus ArgoCD applications for GitOps deployments.
-- `terraform/`: AWS bootstrap, EKS, and SSM state management.
+- dưới 100 nhân viên
+- một hoặc vài cửa ra vào
+- một backend/server-side environment nhỏ
+- một hoặc nhiều edge device đặt gần camera
+- có thể chạy local bằng Docker Compose hoặc cloud bằng AWS EKS
 
-## Why This Architecture Is Practical
+## 1. Mô Hình Triển Khai
 
-For a company with fewer than 100 employees, you usually do not need a large
-platform footprint. The real challenges are:
+Các phần chính:
 
-- stable camera input
-- accurate face detection and cropping
-- consistent embedding and matching
-- reliable audit logging
-- backup and recoverability
+- `edge-client/`: ứng dụng kiosk ở cửa ra vào. Đây là UI người dùng/bảo vệ thấy trực tiếp.
+- `backend/`: FastAPI APIs, business logic, recognition pipeline, tích hợp SQL, object storage, vector search và background jobs.
+- `frontend-admin/`: admin UI để quản lý nhân viên, enrollment bằng camera, threshold, role và audit review. App được serve ở `/admin/`.
+- `nginx/`: reverse proxy expose `/admin/`, `/api/`, `/health`.
+- `docker-compose.yml`: contract compose nền tảng dùng chung.
+- `docker-compose.dev.yml`: override cho local development.
+- `docker-compose.ci.yml`: override cho CI.
+- `docker-compose.edge.yml`: stack edge-client.
+- `deploy/`: Helm chart và ArgoCD applications cho GitOps deployment.
+- `terraform/`: AWS bootstrap, EKS và SSM state/runtime management.
 
-A single small local environment is often enough for:
+## 2. Vì Sao Kiến Trúc Này Thực Tế?
+
+Với công ty nhỏ, vấn đề lớn nhất thường không phải platform phức tạp mà là:
+
+- camera input ổn định
+- detect/crop mặt đủ tốt
+- embedding và matching nhất quán
+- audit log tin cậy
+- backup và khả năng restore
+
+Local/dev stack có thể chạy đủ:
 
 - backend API
 - worker
@@ -44,47 +44,57 @@ A single small local environment is often enough for:
 - Redis
 - nginx
 
-For AWS staging and production, the practical target is different:
+Trên AWS staging/production, mô hình đúng hơn là:
 
-- EKS runs only stateless workloads such as `backend`, `worker`, `frontend-admin`, and `nginx`
-- PostgreSQL lives outside the cluster
-- Redis or Valkey lives outside the cluster
-- Amazon S3 is the primary object store
-- autoscaling happens on stateless pods, not on data stores inside Kubernetes
+- EKS chỉ chạy stateless workloads như `backend`, `worker`, `frontend-admin`, `nginx`
+- PostgreSQL nằm ngoài cluster bằng RDS
+- Redis hoặc Valkey nằm ngoài cluster
+- S3 là object store chính
+- autoscaling chỉ áp dụng cho pods stateless, không scale data store trong Kubernetes
 
-## Runtime Topology
+## 3. Runtime Topology
 
-### Server side
+### Phía Server
 
-- `nginx` listens on port `80`
-- `/admin/` routes to `frontend-admin`, including `#/enroll/session/{token}`
-- `/enroll/` redirects to `/admin/` for compatibility
-- `/api/` routes to `backend`
-- `backend` talks to external PostgreSQL, external Redis or Valkey, and S3
-- `worker` consumes async jobs from external Redis or Valkey and can scale independently from the API
+- `nginx` listen port `80` hoặc được LoadBalancer/TLS terminate phía trước.
+- `/admin/` route tới `frontend-admin`.
+- `/enroll/` redirect về `/admin/` để tương thích.
+- `/api/` route tới `backend`.
+- `/health` là public shallow health check.
+- `backend` nói chuyện với PostgreSQL, Redis/Valkey và S3.
+- `worker` consume async jobs từ Redis/Valkey và scale độc lập với API.
 
-### Edge side
+### Phía Edge
 
-- `edge-client` reads frames from the local camera
-- faces are detected and cropped before upload
-- crops are sent to `POST /api/vision/recognize`
-- the kiosk UI confirms pass, fail, or retry
+- `edge-client` đọc frame từ camera local.
+- face được detect và crop ngay trên edge.
+- chỉ upload cropped JPEG payload về `POST /api/vision/recognize`.
+- kiosk UI hiển thị pass, fail hoặc retry.
 
-## Camera And Event Flow
+Hiện không có pipeline stream raw video tập trung. Điều này giúp hệ thống đơn giản hơn và giảm chi phí.
 
-- camera and raw video stay on the edge device in the current design
-- the edge client detects faces locally and uploads only cropped JPEG payloads to the backend over HTTP
-- `Redis` and `Celery` are the current async event mechanism for background work such as re-indexing or batch jobs
-- there is intentionally no centralized video streaming pipeline or Kafka event bus yet, because the current workload does not need multi-consumer replayable event streams
-- revisit centralized streaming only when many cameras, centralized live monitoring, or multiple downstream event consumers justify the extra platform cost
+## 4. Camera Và Event Flow
 
-## Current Structure
+Flow chính:
+
+```text
+camera local
+-> edge-client detect/crop mặt
+-> upload face crop qua HTTP
+-> backend tạo embedding hoặc verify
+-> backend ghi recognition/audit logs
+-> kiosk hiển thị kết quả
+```
+
+Redis và Celery hiện là cơ chế async cho các tác vụ nền như re-index hoặc batch job. Chưa cần Kafka/event bus nếu chưa có nhiều consumer hoặc replay requirement.
+
+## 5. Cấu Trúc Repo
 
 ```text
 project-root/
 |-- .github/
 |   `-- workflows/
-|       |-- ci.yml
+|       |-- ci-gateway.yml
 |       |-- gitops-staging.yml
 |       |-- gitops-production.yml
 |       |-- app-cd.yml
@@ -98,420 +108,287 @@ project-root/
 |-- docker-compose.ci.yml
 |-- docker-compose.edge.yml
 |-- .env.example
-|-- deploy/runtime/
-|   |-- backend.staging.env.example
-|   `-- backend.production.env.example
-|-- edge-client/
-|   `-- .env.example
+|-- deploy/
+|-- terraform/
+|-- docs/
 `-- README.md
 ```
 
-## URL Layout
+## 6. URL Layout
 
-- `http://your-server-domain/admin/`: admin frontend and token-bound enrollment module
-- `http://your-server-domain/enroll/`: compatibility redirect to the admin frontend
-- `http://your-server-domain/api/health`: backend health
-- `edge-client`: entrance kiosk flow
+Local/dev:
 
-## API Contract And E2E Smoke Test
+- `http://localhost/admin/`: admin UI
+- `http://localhost/enroll/`: redirect tương thích về admin UI
+- `http://localhost/api/health`: backend/admin API health
+- `http://localhost/health`: public shallow health qua nginx
+- `http://localhost:8080`: edge kiosk web UI khi chạy local
 
-- API request and response contracts now live in `docs/api-contract.yml` as the source-of-truth contract file.
-- Local or CI compose-backed smoke test lives in `scripts/ci-e2e-test.sh`.
-- HTTP smoke assertions run in `backend/tests/e2e/`, while the shell script is responsible for infra bring-up, Alembic migration, and service readiness checks.
-- Unit and service-level integration tests stay under `backend/tests/` and are executed by default with `pytest`.
+Cloud/stable DNS:
 
-## Run With Docker
+- production: `https://face.example.com`
+- staging: `https://staging.face.example.com`
+- sandbox: `https://sandbox-pr-123.face.example.com`
 
-### Server stack
+## 7. API Contract Và E2E Smoke Test
+
+- Contract API source-of-truth nằm ở `docs/api-contract.yml`.
+- File pointer Markdown nằm ở `docs/api-contract.md`.
+- Compose-backed smoke test nằm ở `scripts/ci-e2e-test.sh`.
+- HTTP smoke assertions nằm trong `backend/tests/e2e/`.
+- Unit và service-level integration tests nằm trong `backend/tests/` và chạy bằng `pytest`.
+
+## 8. Chạy Local Bằng Docker
+
+### Server Stack
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
-This starts:
+Lệnh này chạy:
 
-- `backend`
-- `worker`
-- `frontend-admin`
-- `nginx`
-- `db`
-- `minio`
-- `redis`
+- backend
+- worker
+- frontend-admin
+- nginx
+- db
+- minio
+- redis
 
-### Edge stack
+### Edge Stack
 
 ```bash
 docker compose -f docker-compose.edge.yml up -d --build
 ```
 
-This starts:
+Hoặc chạy chung:
 
-- `edge-client`
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.edge.yml up -d --build
+```
 
-This repo now supports an AWS EKS deployment flow driven by Terraform, Helm, and ArgoCD.
+Trên Windows dev, camera thường nên chạy edge-client trực tiếp bằng venv local thay vì container, vì Docker Desktop Linux container không tự có `/dev/video0`.
 
-## AWS cloud deployment guidance
+## 9. Deploy Lên AWS Cloud
 
-The current preferred runtime model is:
+Runtime cloud khuyến nghị:
 
-- `Terraform` to create and destroy AWS infrastructure on demand
-- `Amazon EKS` for the Kubernetes control plane and worker nodes
-- `GitHub Container Registry (GHCR)` as the single image registry for backend, frontend-admin, and edge images
-- `Helm` for packaging the application stack
-- `ArgoCD` for continuous reconciliation inside the cluster
-- `AWS SSM Parameter Store` for application environment values
-- `AWS S3` for archived snapshots and backups
+- Terraform tạo/xóa hạ tầng AWS.
+- Amazon EKS chạy Kubernetes control plane và worker nodes.
+- GHCR là registry duy nhất cho backend, frontend-admin, nginx và edge images.
+- Helm đóng gói app stack.
+- ArgoCD reconciliation trong cluster.
+- AWS SSM Parameter Store giữ runtime values.
+- AWS S3 lưu snapshot/audit object.
+- Cloudflare DNS + ExternalDNS tạo stable public DNS khi bật. Route53 chỉ là nhánh optional nếu sau này muốn AWS quản lý DNS.
 
-The repository keeps the application state in Git and the runtime secrets in SSM, while GitHub Actions bridges the two.
+Git giữ application state. Secrets/runtime values nằm trong GitHub Secrets và AWS SSM.
 
-## Staging and Production Shape
+## 10. Staging Và Production
 
-| Component | Staging | Production |
+| Thành phần | Staging | Production |
 | --- | --- | --- |
-| Compute | EKS, typically 1-2 nodes with reactive headroom | EKS |
-| API | HPA, typically 1 -> 3 pods | HPA, typically 2 -> 20 pods |
-| Worker | KEDA, typically 1 -> 3 pods | KEDA, production envelope |
-| Database | small RDS PostgreSQL | RDS PostgreSQL Multi-AZ |
-| Queue | external Redis or Valkey | external Redis or Valkey with HA |
+| Compute | EKS nhỏ, thường 1-2 nodes | EKS production envelope |
+| API | HPA, thường 1 -> 3 pods | HPA, thường 2 -> 20 pods |
+| Worker | KEDA, thường 1 -> 3 pods | KEDA production envelope |
+| Database | RDS PostgreSQL nhỏ | RDS PostgreSQL Multi-AZ |
+| Queue | Redis/Valkey external | Redis/Valkey HA |
 | Storage | S3 | S3 |
-| Edge AI | fake or replayed data | real edge devices |
-| Complexity | production-like behavior at low scale | higher |
+| Edge AI | fake/replayed hoặc real test | real edge devices |
+| Độ phức tạp | production-like scale thấp | cao hơn |
 
-This repository currently keeps staging and production on the same GitOps + EKS toolchain so promotion, ArgoCD, and runtime secrets behave the same. If you later collapse staging to ECS or EC2, keep the same external `DATABASE_URL`, `REDIS_URL`, and `AWS_S3_BUCKET` contract.
+Staging và production dùng cùng GitOps + EKS toolchain để promotion, ArgoCD và runtime secrets giống nhau.
 
-## Cost-saving workflow
+## 11. Workflow Tiết Kiệm Chi Phí
 
-The recommended student/lab workflow is:
+Workflow phù hợp lab/student:
 
-1. run `Infrastructure Management` with `environment=staging` or `environment=production` to create the target VPC, EKS cluster, S3 bucket, and ArgoCD
-2. keep working normally with trunk-based CI on pull requests and merges to `main` or `master`
-3. let `GitOps Staging Promotion` write the successful CI commit SHA into `deploy/helm/face-detector/values-staging.yaml`
-4. create a GitHub Release when you want production promotion, and let `GitOps Production Promotion` write the release commit SHA into `deploy/helm/face-detector/values-production.yaml`
-5. run `ArgoCD Bootstrap` whenever a cluster is recreated or brought back online so SSM values, runtime secrets, and the correct environment-specific ArgoCD Application are seeded into that cluster
-6. run `Infrastructure Management` with `destroy` when you are done for the day
+1. Chạy `Infrastructure Management` với `environment=staging` hoặc `production` để tạo VPC, EKS, S3, ArgoCD.
+2. Phát triển bình thường bằng PR và merge vào `master`.
+3. `GitOps Staging Promotion` ghi commit SHA đã pass release vào `values-staging.yaml`.
+4. Tạo GitHub Release khi muốn promote production.
+5. `GitOps Production Promotion` ghi release commit SHA vào `values-production.yaml` sau approval.
+6. Chạy `ArgoCD Bootstrap` khi cluster mới tạo hoặc bật lại.
+7. Destroy hạ tầng khi không dùng để tiết kiệm chi phí.
 
-This keeps the expensive EKS environment disposable without forcing stateful data stores back into the cluster. That is a lab cost-control choice, not the application elasticity model: while a cluster is running, scaling should be reactive through HPA, KEDA, and cluster-autoscaler rather than driven by a business-hours schedule.
+EKS environment có thể disposable, nhưng data store vẫn external và có backup.
 
-## Terraform layout
+## 12. Terraform Layout
 
-- `terraform/bootstrap`: one-time remote-state bootstrap for the S3 state bucket and DynamoDB lock table
-- `terraform/eks`: EKS, VPC, private data subnets, managed PostgreSQL, managed Redis, S3 snapshot bucket, namespaces, ArgoCD, metrics-server, KEDA, and cluster-autoscaler defaults for both staging and production
-- `terraform/ssm`: sync backend runtime env files into `/facedetector/<environment>/...`
+- `terraform/bootstrap`: bootstrap remote state, lock table, IAM roles và OIDC trust. Route53 hosted zone/cert/DNSSEC/query logs chỉ là nhánh optional, không cần dùng nếu DNS nằm ở Cloudflare.
+- `terraform/eks`: VPC, EKS, RDS, Redis, S3 snapshot bucket, namespaces, ArgoCD, metrics-server, KEDA, cluster-autoscaler, ExternalDNS.
+- `terraform/ssm`: sync backend runtime env vào `/facedetector/<environment>/...`.
 
-> The `terraform/eks` and `terraform/ssm` modules are configured for an S3 remote backend. Create the backend bucket and lock table once with `terraform/bootstrap`, then use those names as `TF_STATE_BUCKET` and `TF_STATE_LOCK_TABLE` in GitHub secrets.
+`terraform/eks` và `terraform/ssm` dùng S3 remote backend. Hãy tạo backend bucket và lock table một lần bằng `terraform/bootstrap`, rồi cấu hình `TF_STATE_BUCKET` và `TF_STATE_LOCK_TABLE`.
 
-## GitHub Actions flow
+## 13. Luồng GitHub Actions
 
-Required GitHub secrets for the new flow:
+Secrets/variables quan trọng:
 
-- `AWS_REGION` (optional; defaults to `ap-southeast-1`)
+- `AWS_REGION`
 - `TF_STATE_BUCKET`
 - `TF_STATE_LOCK_TABLE`
-- `TF_STATE_REGION` (optional; defaults to `AWS_REGION`, but set it explicitly when the Terraform state bucket lives in another region)
-- `STAGING_BACKEND_ENV_FILE` (optional but recommended; multiline backend runtime env file for staging)
-- `PRODUCTION_BACKEND_ENV_FILE` (optional but recommended; multiline backend runtime env file for production)
-- `SANDBOX_BACKEND_ENV_FILE` (optional; when unset, sandbox workflows reuse the staging runtime contract)
-- `ARGOCD_REPO_USERNAME` (optional; needed when the GitHub repository is private)
-- `ARGOCD_REPO_TOKEN` (optional; needed when the GitHub repository is private)
-- `GHCR_USERNAME` (optional; needed only when GHCR images are private)
-- `GHCR_TOKEN` (optional; needed only when GHCR images are private)
+- `TF_STATE_REGION`
+- `STAGING_BACKEND_ENV_FILE`
+- `PRODUCTION_BACKEND_ENV_FILE`
+- `SANDBOX_BACKEND_ENV_FILE`
+- `ARGOCD_REPO_USERNAME`
+- `ARGOCD_REPO_TOKEN`
+- `GHCR_USERNAME`
+- `GHCR_TOKEN`
 
-Required GitHub secrets for GitHub OIDC role assumption:
+OIDC role secrets:
 
-- `AWS_ROLE_SANDBOX_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
-- `AWS_ROLE_SANDBOX_PLAN_ARN`, `AWS_ROLE_SANDBOX_APPLY_ARN`, `AWS_ROLE_SANDBOX_DESTROY_ARN`, and `AWS_ROLE_SANDBOX_APPDEPLOY_ARN` optional during migration. When set, sandbox workflows use the task-scoped role and fall back to `AWS_ROLE_SANDBOX_ARN` only when the scoped ARN is missing.
-- `AWS_ROLE_STAGING_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
-- `AWS_ROLE_PRODUCTION_ARN` preferred. A repository variable fallback still works during migration, but the sensitive ARN should move to a secret.
+- `AWS_ROLE_SANDBOX_ARN`
+- `AWS_ROLE_SANDBOX_PLAN_ARN`
+- `AWS_ROLE_SANDBOX_APPLY_ARN`
+- `AWS_ROLE_SANDBOX_DESTROY_ARN`
+- `AWS_ROLE_SANDBOX_APPDEPLOY_ARN`
+- `AWS_ROLE_STAGING_ARN`
+- `AWS_ROLE_PRODUCTION_ARN`
+- `AWS_ROLE_BOOTSTRAP_ARN`
 
-The task-scoped sandbox ARNs should be enabled only after `terraform/bootstrap` has attached the split permission policies and the EKS module can grant sandbox cluster access to the scoped roles. The intended migration is: create/adopt the split roles, attach policies from bootstrap Terraform, merge the workflow/EKS access change, then set the four scoped role secrets and run a sandbox PR end-to-end.
+Sau khi OIDC hoạt động, xóa IAM user secrets legacy:
 
-If `STAGING_BACKEND_ENV_FILE` or `PRODUCTION_BACKEND_ENV_FILE` is not set, `ArgoCD Bootstrap` falls back to the committed template under `deploy/runtime/`. For real staging or production deployments, prefer the secret-backed env file so runtime values do not live in Git.
+```text
+AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY
+```
 
-When `SANDBOX_BACKEND_ENV_FILE` is not set, sandbox plan/apply/bootstrap runs fall back to the staging runtime contract and then rewrite infrastructure endpoints from the sandbox Terraform outputs.
+## 14. DNS Public Ổn Định Cho Edge Và Admin
 
-After you finish the GitHub OIDC migration, delete the legacy `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets. The infrastructure workflows no longer use IAM user credentials.
+Repo hỗ trợ stable public DNS bằng Cloudflare DNS + ExternalDNS. Đây là hướng phù hợp khi dùng domain miễn phí từ GitHub Student Developer Pack.
 
-Terraform state does not have to live in the same region as the deployed infrastructure. When the backend bucket and lock table are in a different region, set `TF_STATE_REGION` so workflow `terraform init` can reach the correct S3 and DynamoDB backend while `AWS_REGION` still points at the target workload region.
+GitHub repo variables:
 
-`Infrastructure Management` now reads `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `REDIS_PASSWORD` from that same environment contract so the managed RDS and Redis resources use the same credentials as the application.
+```text
+FACE_DETECTOR_BASE_DOMAIN
+FACE_DETECTOR_DNS_PROVIDER
+FACE_DETECTOR_PUBLIC_DNS_ENABLED
+FACE_DETECTOR_PUBLIC_TLS_ENABLED
+CLOUDFLARE_ZONE_ID
+```
 
-The backend runtime templates in `deploy/runtime/` are also the canonical copy-paste starting point for `STAGING_BACKEND_ENV_FILE` and `PRODUCTION_BACKEND_ENV_FILE`.
+GitHub repo secret:
 
-Recommended repository variables for the two-cluster setup:
+```text
+CLOUDFLARE_API_TOKEN
+```
 
-- `STAGING_EKS_CLUSTER_NAME` (optional; defaults to `face-detector-staging`)
-- `PRODUCTION_EKS_CLUSTER_NAME` (optional; defaults to `face-detector-production`)
-- `SANDBOX_EKS_CLUSTER_PREFIX` (optional; defaults to `face-detector-sbx`, and sandbox cluster names are derived from the PR number)
-- `STAGING_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-staging`)
-- `PRODUCTION_SNAPSHOT_BUCKET_NAME` (optional; defaults to `face-detector-employee-images-production`)
-- `SANDBOX_SNAPSHOT_BUCKET_PREFIX` (optional; defaults to `face-detector-sbx`)
-- `STAGING_NODE_INSTANCE_TYPE`, `STAGING_NODE_MIN_SIZE`, `STAGING_NODE_MAX_SIZE`, `STAGING_NODE_DESIRED_SIZE` (optional; default to a small reactive-scaling staging envelope with 1 desired node and up to 2 nodes)
-- `PRODUCTION_NODE_INSTANCE_TYPE`, `PRODUCTION_NODE_MIN_SIZE`, `PRODUCTION_NODE_MAX_SIZE`, `PRODUCTION_NODE_DESIRED_SIZE` (optional; default to a larger production node group envelope)
-- `SANDBOX_NODE_INSTANCE_TYPE`, `SANDBOX_NODE_MIN_SIZE`, `SANDBOX_NODE_MAX_SIZE`, `SANDBOX_NODE_DESIRED_SIZE` (optional; default to a staging-sized sandbox envelope)
-- `SSM_KMS_KEY_ID` (optional; customer-managed KMS key for SSM `SecureString` parameters)
+Ví dụ:
 
-OIDC trust policy templates for the GitHub roles live under `aws/`, including task-scoped sandbox templates for plan, apply, destroy, and app deploy. The full setup checklist is documented in `aws/github-oidc-setup.md`.
+```powershell
+gh variable set FACE_DETECTOR_BASE_DOMAIN --repo chiendz11/Face_dectector --body "face.example.com"
+gh variable set FACE_DETECTOR_DNS_PROVIDER --repo chiendz11/Face_dectector --body "cloudflare"
+gh variable set FACE_DETECTOR_PUBLIC_DNS_ENABLED --repo chiendz11/Face_dectector --body "true"
+gh variable set FACE_DETECTOR_PUBLIC_TLS_ENABLED --repo chiendz11/Face_dectector --body "false"
+gh variable set CLOUDFLARE_ZONE_ID --repo chiendz11/Face_dectector --body "<cloudflare-zone-id>"
+gh secret set CLOUDFLARE_API_TOKEN --repo chiendz11/Face_dectector --body "<cloudflare-api-token>"
+```
 
-The enterprise trust model in this repository is default-branch anchored. Today the repository default branch is still `master`, so the strict reusable workflow references and AWS `job_workflow_ref` strings use `@refs/heads/master`. If you later rename the default branch to `main`, update those pins and trust strings together.
+Sau khi domain đã nằm trong Cloudflare và ExternalDNS đã tạo record, edge device dùng:
 
-The active workflows are:
+```text
+API_BASE_URL=https://face.example.com
+```
 
-- `CI Pipeline`: trunk-based validation on pull requests and pushes to `main` or `master`, plus GHCR image publish on push
-- `Terraform PR Plan`: a `pull_request_target` parent on `main` or `master` that calls a reusable child workflow, resolves an exact PR sandbox identity, assumes `Role-Sandbox-Plan` through GitHub OIDC when configured, and comments EKS plus SSM plan output back onto the PR
-- `GitOps Staging Promotion`: after `CI Pipeline` succeeds on `main` or `master`, commits the exact immutable image SHA into `values-staging.yaml`
-- `GitOps Production Promotion`: when a GitHub Release is published, resolves the release commit SHA and commits it into `values-production.yaml`
-- `Sandbox Auto Apply`: the developer-facing `pull_request_target` parent that gates on draft state, deploy label, and quota before calling the reusable infrastructure and bootstrap workflows from the default branch
-- `Sandbox Auto Destroy`: the developer-facing `pull_request_target` parent that tears down `sandbox-active` PR sandboxes on close, convert-to-draft, or final deploy-label removal
-- `Sandbox Janitor`: TTL and nightly cleanup for `sandbox-active` PR sandboxes by dispatching the default-branch `Infrastructure Management` destroy workflow
-- `Sandbox DevOps Verify`: the privileged manual-dispatch lane for `devops/*` branches; the parent workflow can evolve on `devops/*`, but it calls the child infrastructure and bootstrap workflows pinned to the default branch so the AWS trust decision stays anchored on the approved workflow definition
-- `ArgoCD Bootstrap`: reusable bootstrap workflow plus manual rescue entry point for shared environments and sandbox admin recovery
-- `Infrastructure Management`: reusable infrastructure workflow plus manual rescue entry point for sandbox, staging, and production
+Chi tiết nằm ở:
 
-The promotion workflows commit with `[skip ci]` so GitOps config updates do not trigger an infinite CI rebuild loop.
+```text
+docs/public-dns-gitops-edge-operations.md
+```
 
-There is intentionally no automatic per-PR application preview environment in this setup. The infrastructure sandbox is now an exact-state-per-PR environment with cost gates and janitor cleanup, but it remains tightly controlled because EKS and RDS are expensive.
+## 15. Workflow Đang Hoạt Động
 
-Reviewer-facing rules for when to request `deploy-sandbox` or `deploy-preview` now live in `docs/sandbox-decision-matrix.md`, including the heavy-lane versus fast-lane split, the CI-green prerequisite for auto-apply, and the mandatory auto-destroy lifecycle.
+- `CI Gateway`: gateway tổng hợp theo domain/lane.
+- `App CI`: verify app path.
+- `App Release`: publish images lên GHCR từ trusted branch.
+- `GitOps Staging Promotion`: promote staging bằng immutable digest.
+- `GitOps Production Promotion`: promote production khi publish GitHub Release và có approval gate.
+- `Terraform PR Plan`: plan sandbox từ PR.
+- `Sandbox Auto Apply`: apply sandbox khi owner gắn `deploy-sandbox`.
+- `Sandbox Auto Destroy`: destroy sandbox khi PR close/draft/remove label.
+- `Sandbox Janitor`: cleanup sandbox quá hạn hoặc lệch state.
+- `Infrastructure Management`: apply/destroy sandbox/staging/production.
+- `ArgoCD Bootstrap`: seed SSM runtime secret và ArgoCD Application.
+- `Terraform Bootstrap Apply`: cập nhật bootstrap/IAM/DNS foundation.
 
-For the trust boundary, keep sandbox AWS roles limited to `main`, `master`, and `devops/*` trusted refs, and prefer task-scoped roles over the legacy consolidated `Role-Sandbox`. Protect `devops/*` with GitHub branch rules, and require DevOps approval for `.github/workflows/*` and `aws/github-oidc-*` through `CODEOWNERS` once you have more than one maintainer. If you want AWS to validate the exact reusable workflow path, not just the trusted ref, you must customize GitHub's OIDC `sub` claim to include `job_workflow_ref` and then match that customized `sub` in AWS. If you later move AWS role ARNs into a GitHub Environment such as `Sandbox-Internal`, update the AWS trust policy to match the environment-based OIDC subject because GitHub changes the default `sub` claim for jobs that reference an environment.
+## 16. Mapping Runtime Trên EKS
 
-If you are working solo, keep the same separation anyway: use `feature/*` or `dev/*` for app work, and reserve `devops/*` for Terraform, workflow, and OIDC experiments. That keeps your everyday application flow simple while preserving a clean high-risk lane for infrastructure changes.
+- `backend`, `worker`, `frontend-admin`, `nginx` được deploy bằng Helm chart `deploy/helm/face-detector`.
+- PostgreSQL, Redis/Valkey, S3 nằm ngoài cluster.
+- Sandbox và staging dùng `values-staging.yaml`.
+- Production dùng `values-production.yaml`.
+- `nginx` là public entry point.
+- Kubernetes secret `face-detector-env` được tạo từ SSM trong `ArgoCD Bootstrap`.
+- Khi có `GHCR_USERNAME` và `GHCR_TOKEN`, bootstrap tạo `ghcr-pull-secret`.
+- `metrics-server`, `KEDA`, `cluster-autoscaler` được cài bằng Terraform.
 
-The dual-track sandbox layout is intentionally split by identity context: developer PR sandboxes use `sandboxes/pr-<number>/...`, while manual DevOps previews use `admin-previews/<owner>/<branch>/...`. The admin deployment identity itself is `admin-<actor>-<branch_hash>`, while the state path keeps the readable owner and branch namespace. That keeps Terraform state and cleanup responsibilities separated between the automatic PR lane and the manual admin lane.
+## 17. Chiến Lược Object Storage
 
-## Runtime Mapping on EKS
+- Local Docker Compose dùng MinIO.
+- Staging/production dùng S3.
+- Backend trả presigned S3 URL trên cloud, nên Kubernetes không cần proxy object traffic qua MinIO trong cluster.
 
-- `backend`, `worker`, `frontend-admin`, and `nginx` are deployed by the Helm chart under `deploy/helm/face-detector`
-- PostgreSQL, Redis or Valkey, and S3 stay external to the cluster
-- sandbox and staging both track `deploy/helm/face-detector/values-staging.yaml` through `deploy/argocd/staging-application.yaml.tpl`, but sandbox clusters get isolated SSM paths under `/facedetector/sandbox/<cluster-name>/...`
-- staging tracks `deploy/helm/face-detector/values-staging.yaml` through `deploy/argocd/staging-application.yaml.tpl`
-- production tracks `deploy/helm/face-detector/values-production.yaml` through `deploy/argocd/production-application.yaml.tpl`
-- `nginx` remains the single public entry point and proxies `/api/` and `/admin/`
-- the Kubernetes secret `face-detector-env` is generated from SSM during `ArgoCD Bootstrap`, with SSM values sourced from the secret-backed backend env file and then patched with Terraform-managed endpoints when provided
-- SSM runtime values are stored as `SecureString` by default and decrypted during bootstrap when generating `.env.runtime`
-- when `GHCR_USERNAME` and `GHCR_TOKEN` are provided, `ArgoCD Bootstrap` also creates `ghcr-pull-secret` so the cluster can pull private GHCR images
-- `metrics-server` is installed by Terraform so the backend HPA can scale on pod resource usage
-- `KEDA` is installed by Terraform in both staging and production so the worker can scale on Redis queue depth while still using a native Kubernetes HPA under the hood
-- `cluster-autoscaler` is installed by Terraform in both staging and production so node capacity can follow backend HPA and worker KEDA demand
+## 18. Kiểm Thử Bảo Mật Và Khả Năng Chịu Lỗi
 
-## Object Storage Strategy
+Nginx có rate limit cho `/api/`:
 
-- local Docker Compose uses MinIO as the development object store
-- staging and production use Amazon S3 as the primary snapshot and audit object store
-- the backend returns presigned S3 URLs in cloud environments, so Kubernetes does not have to proxy object traffic through an in-cluster MinIO service while object access stays time-limited
+- `NGINX_RATE_LIMIT_ENABLED`
+- `NGINX_RATE_LIMIT_ZONE_RATE`
+- `NGINX_RATE_LIMIT_BURST`
+- `NGINX_RATE_LIMIT_MODE`
 
-### Minimal IAM access pattern
+Scripts hỗ trợ:
 
-Split the AWS identity story into two parts:
+- `scripts/security_tests.py`: kiểm tra rate-limit và auth admin.
+- `scripts/concurrency_test.py`: gửi concurrent requests tới recognition endpoint.
+- `scripts/load_test_locust.py`: load test bằng Locust.
 
-- GitHub Actions should assume `Role-Sandbox`, `Role-Staging`, and `Role-Prod` through GitHub OIDC. The trust policy templates live in `aws/github-oidc-trust-policy-*.json`.
-- Runtime workloads inside AWS still need their own IAM permissions for SSM, S3, and any future service integration.
-
-For GitHub Actions and EKS worker nodes you should still ensure the relevant principals can:
-
-- read and write SSM parameters under `/facedetector/*`
-- create and manage EKS, VPC, and S3 resources for the lab environment when the role is meant to run Terraform
-- list and get objects from the S3 snapshot bucket
-
-A sample runtime access policy file is available at `aws/iam-policy-face-detector.json`. The GitHub OIDC role setup is documented in `aws/github-oidc-setup.md`.
-
-## Security and Resilience Testing
-
-The current deployment now includes an Nginx API rate limit for `/api/` at `5r/s` with burst handling. This helps protect the backend from noisy or abusive clients and returns `429` when limits are exceeded.
-
-Rate limiting is parameterized via environment variables rendered into the Nginx config at container startup:
-
-- `NGINX_RATE_LIMIT_ENABLED` (`true` or `false`)
-- `NGINX_RATE_LIMIT_ZONE_RATE` (default `5r/s`)
-- `NGINX_RATE_LIMIT_BURST` (default `10`)
-- `NGINX_RATE_LIMIT_MODE` (default `nodelay`)
-
-`docker-compose.dev.yml` and `docker-compose.ci.yml` can set `NGINX_RATE_LIMIT_ENABLED=false` to avoid flaky smoke tests, while production keeps it enabled.
-
-Use the helper scripts in `scripts/` to verify common hardening behavior:
-
-- `scripts/security_tests.py`:
-  - rate-limit validation against `/api/vision/recognize`
-  - authorization checks for admin endpoints
-- `scripts/concurrency_test.py`:
-  - send concurrent requests to the recognition endpoint
-  - observe whether duplicate recognition events appear under simultaneous load
-
-Example usage:
+Ví dụ:
 
 ```bash
 python scripts/security_tests.py --host http://localhost --image-path ./tests/fixtures/sample-face.jpg
 python scripts/concurrency_test.py --host http://localhost --image-path ./tests/fixtures/sample-face.jpg --workers 2
 ```
 
-### Load testing with Locust and Nginx rate limiting
-
-This repo now includes `scripts/load_test_locust.py` which exercises `/api/vision/recognize` and flags `429` responses as rate-limited failures. Run it with:
+Locust:
 
 ```bash
 LOCUST_IMAGE_DIR=./tests/fixtures locust -f scripts/load_test_locust.py --host http://localhost --headless -u 50 -r 5 --run-time 2m
 ```
 
-If Nginx rate limiting is active, you should see `429` responses appear in the Locust report.
+## 19. Hướng Dẫn Backup
 
-### What this verifies
+Minimum backup plan:
 
-- request throttling on the public API
-- unauthorized admin access is rejected
-- the recognition path can be exercised under concurrent submission
+- automated RDS snapshots
+- point-in-time recovery / WAL retention
+- S3 versioning hoặc replication
+- periodic restore drill vào staging
+- IaC và runtime config lưu bằng code/SSM để rebuild sạch
 
-### What still needs explicit application logic
+Với `pgvector`, restore target phải có extension vector trước khi import logical dump.
 
-The current code provides API-layer hardening and restart-based resiliency, but deduplication of repeated recognition events is not yet implemented as a business rule. If you need "only one attendance event per employee per passage", add application-side logic to collapse same-employee events within a short window or derive a stable event key from the device/session.
+## 20. Biến Môi Trường Quan Trọng
 
-### Backup guidance
+Backend local dùng `.env.example`.
 
-A simple database dump is a good starting point, but in a production-grade system you should not rely on it as the only backup method.
-
-Recommended backup components:
-
-- automated scheduled Postgres backups or RDS snapshots
-- point-in-time recovery / WAL archive retention for faster restore
-- S3 versioning or replication for original photo objects
-- a periodic verification process that restores a backup to a staging instance
-- infrastructure and config as code so environment state can be reprovisioned
-
-For availability, start with RDS Multi-AZ plus backups. Only populate `DATABASE_REPLICA_URLS` after you have a real reader endpoint and a read path that can tolerate replica lag.
-
-For `pgvector`, ensure the vector extension is installed in the restore target before importing a logical dump.
-
-## Practical Decisions
-
-### Frontend user should be what?
-
-For this use case, the user-facing frontend should be the kiosk at the gate,
-not another public web app. It should eventually show:
-
-- camera preview
-- scanning state
-- matched employee name or failure state
-- retry instructions
-- recent recognition events for the guard
-
-### Admin frontend on VPS or on a platform?
-
-Default recommendation for this repo:
-
-- keep `frontend-admin` behind the same `nginx` entry point under `/admin/`
-- use one public domain and one ingress path layout
-- avoid CORS
-- keep staging and production behavior simpler
-
-If you later move the admin frontend to a separate platform, do it only after auth, monitoring, and CORS behavior are already stable.
-
-### Do you need cache?
-
-Yes, but keep it small:
-
-- use external Redis or Valkey as the Celery broker and result backend
-- keep queue and cache concerns on the same managed service only while the workload is still small
-- optional short-lived cache for system config and recognition cooldowns can live there too
-- scale workers from queue depth through KEDA instead of manually tuning deployment replicas
-
-Do not spend project time on multi-layer cache before the core recognition flow
-works correctly.
-
-### Do you need backup?
-
-Yes. Minimum practical backup plan for this repo is:
-
-- automated RDS snapshots and point-in-time recovery
-- S3 versioning for raw snapshots and audit objects
-- periodic restore drills into a staging database
-- backup artifacts stored outside the running cluster
-- infrastructure and runtime config stored as code so the environment can be rebuilt cleanly
-
-In the current cloud-aligned design, the vector store is `pgvector` inside Postgres, so embedding durability follows the database backup strategy.
-
-## Bonus-Point Priorities
-
-If your goal is to maximize score with practical effort, prioritize:
-
-1. `CI/CD` for VPS deployment
-2. `Backup` for Postgres (including pgvector data) and MinIO
-3. `Monitoring` with Prometheus and Grafana or at least health alerts
-4. `Model/config versioning` with model name, version, and threshold in config
-5. `SSL/domain` via nginx and Let's Encrypt or Cloudflare
-
-## CI/CD Best Practices Included
-
-This repo now follows a clearer single-registry CI/CD flow:
-
-- `pull_request` CI to catch issues early with linting, unit tests, security scans, image builds, and Helm validation
-- `main` or `master` CI to publish immutable GHCR images tagged with the commit SHA
-- `GitOps Staging Promotion` to move staging to the exact GHCR image tag that passed CI, without rebuilding it
-- `GitOps Production Promotion` to move production only when a GitHub Release is cut
-- `ArgoCD Bootstrap` to reconnect Git, SSM, and cluster runtime state whenever an environment is brought back online
-- `Infrastructure Management` to turn the EKS environment on only when you need it and destroy it when you are done
-
-## Performance and Accuracy Test Scripts
-
-### Load / stress testing with Locust
-
-A Locust script is provided in `scripts/load_test_locust.py`.
-
-Example command:
-
-```bash
-pip install -r backend/requirements.txt
-LOCUST_IMAGE_DIR=./scripts/load_test_images locust -f scripts/load_test_locust.py --host=http://your-server-domain -u 100 -r 20 --run-time 5m --headless
-```
-
-This script sends concurrent `POST /api/vision/recognize` requests using sample JPG/PNG images.
-
-- `-u 100` starts 100 simulated users
-- `-r 20` spawns 20 users per second
-- `--run-time 5m` runs for 5 minutes
-
-### Model accuracy evaluation
-
-A Python evaluation script is provided in `scripts/evaluate_model.py`.
-
-Prepare two labeled folders:
+Backend runtime templates:
 
 ```text
-dataset/gallery/<employee_id>/<image>.jpg
- dataset/query/<employee_id>/<image>.jpg
+deploy/runtime/backend.staging.env.example
+deploy/runtime/backend.production.env.example
 ```
 
-Then run:
+Edge config:
 
-```bash
-python scripts/evaluate_model.py --gallery-dir dataset/gallery --query-dir dataset/query --threshold 0.55
+```text
+edge-client/.env.example
 ```
 
-The script prints precision, recall, F1-score, and a classification report.
-
-### Evidence for reports
-
-- Capture the Locust dashboard or headless statistics
-- Capture the evaluation metrics output from `evaluate_model.py`
-
-### Optional GHCR pull secrets
-
-`CI Pipeline` pushes to GHCR with the built-in `GITHUB_TOKEN`, so no extra registry secret is required for publishing.
-
-If your GHCR packages are private, configure these repository secrets so Kubernetes can pull the images during `ArgoCD Bootstrap`:
-
-- `GHCR_USERNAME`
-- `GHCR_TOKEN`
-
-If your GHCR packages are public, you can leave both unset.
-
-## Important Environment Variables
-
-Backend local development and Docker Compose use `.env.example`.
-
-Backend runtime templates for SSM/EKS live in `deploy/runtime/backend.staging.env.example` and `deploy/runtime/backend.production.env.example`.
-
-Edge-device config lives in `edge-client/.env.example` plus optional environment-specific copies.
-
-Common backend runtime keys:
+Backend keys thường gặp:
 
 - `DATABASE_URL`
 - `DATABASE_REPLICA_URLS`
@@ -531,35 +408,37 @@ Common backend runtime keys:
 - `ENROLLMENT_MIN_SAMPLES`
 - `ENROLLMENT_MAX_SAMPLES`
 
-The default backend embedding runtime is DeepFace with `MODEL_NAME=Facenet512`
-and `EMBEDDING_DIMENSIONS=512`. The `hash` provider is only for deterministic
-unit tests and plumbing smoke tests; it is not a real face-recognition model.
-When `EMBEDDING_PROVIDER=deepface`, the backend fails closed if DeepFace cannot
-load or returns an embedding with the wrong dimensions.
+Default embedding runtime là DeepFace:
 
-Edge-device keys:
+```text
+MODEL_NAME=Facenet512
+EMBEDDING_DIMENSIONS=512
+```
+
+`hash` provider chỉ dùng cho deterministic unit tests và smoke plumbing. Không dùng `hash` làm face-recognition model thật.
+
+Edge keys:
 
 - `API_BASE_URL`
 - `EDGE_DEVICE_NAME`
 - `SCAN_INTERVAL_SECONDS`
 
-## Current Status
+## 21. Trạng Thái Hiện Tại
 
-This is still a scaffold. The deployment shape now matches the intended real
-architecture, but the core business features still need implementation:
+Repo đã có nền tảng deployment, governance và CI/CD khá đầy đủ, nhưng business features vẫn cần tiếp tục hoàn thiện:
 
 - employee CRUD
-- role and authentication management
-- production-grade snapshot upload and retention on S3
-- richer `pgvector` indexing and search behavior
+- role/auth management
+- production-grade snapshot upload và retention trên S3
+- pgvector indexing/search behavior
 - background re-indexing jobs
-- stronger enrollment quality checks and liveness controls
-- tests and database migrations
+- enrollment quality checks và liveness controls
+- tests và migrations cho toàn bộ workflow nghiệp vụ
 
-## Suggested Next Steps
+## 22. Bước Tiếp Theo Gợi Ý
 
-1. Implement Postgres models for employees, users, roles, and recognition logs.
-2. Add multi-sample face enrollment quality checks and liveness gates.
-3. Add authentication and role-based admin APIs.
-4. Expand the edge kiosk UI beyond console status output.
-5. Add backup scripts, monitoring compose, and stronger CI/CD verification.
+1. Hoàn thiện employee/admin CRUD và auth.
+2. Hoàn thiện multi-sample enrollment và quality checks.
+3. Thêm audit UI cho recognition logs, audit logs, devices.
+4. Test full flow: enroll -> verify edge -> log -> audit.
+5. Chạy sandbox/staging với stable DNS sau khi domain thật đã add vào Cloudflare và nameserver ở registrar đã trỏ về Cloudflare.

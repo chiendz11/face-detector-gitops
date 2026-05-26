@@ -118,6 +118,11 @@ jobs:
             "SANDBOX_NODE_MAX_SIZE": repo("SANDBOX_NODE_MAX_SIZE", "2"),
             "SANDBOX_NODE_DESIRED_SIZE": repo("SANDBOX_NODE_DESIRED_SIZE", "1"),
             "SSM_KMS_KEY_ID": repo("SSM_KMS_KEY_ID"),
+            "FACE_DETECTOR_BASE_DOMAIN": repo("FACE_DETECTOR_BASE_DOMAIN"),
+            "FACE_DETECTOR_DNS_PROVIDER": repo("FACE_DETECTOR_DNS_PROVIDER", "cloudflare"),
+            "FACE_DETECTOR_PUBLIC_DNS_ENABLED": repo("FACE_DETECTOR_PUBLIC_DNS_ENABLED", "false"),
+            "FACE_DETECTOR_PUBLIC_TLS_ENABLED": repo("FACE_DETECTOR_PUBLIC_TLS_ENABLED", "false"),
+            "CLOUDFLARE_ZONE_ID": repo("CLOUDFLARE_ZONE_ID"),
           }
 
           for key, value in values.items():
@@ -272,6 +277,14 @@ jobs:
           TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
           TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
           TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
+          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
+          TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
+          TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
+          TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \

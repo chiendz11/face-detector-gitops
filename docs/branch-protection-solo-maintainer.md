@@ -1,83 +1,82 @@
-# Branch Protection For Solo Maintainer
+# Bảo Vệ Branch Cho Solo Maintainer
 
-This repository uses CODEOWNERS and custom policy checks as governance metadata.
-For a solo-maintainer project, GitHub native review enforcement should stay off
-unless another trusted reviewer exists.
+Repo này dùng `CODEOWNERS` và custom policy checks như một lớp metadata/audit governance. Với dự án solo maintainer, không nên bật native GitHub review enforcement nếu chưa có reviewer thứ hai đáng tin cậy.
 
-## Recommended Merge Gates
+## Các Gate Merge Khuyến Nghị
 
-Keep these gates required on `master`:
+Nên require các check sau trên `master`:
 
-- `CI Gateway / gateway`
-- `Sandbox Policy / evaluate`
-- `Repo Security / secret-scan`
+```text
+CI Gateway / gateway
+Sandbox Policy / evaluate
+Repo Security / secret-scan
+```
 
-Keep these repository rules enabled:
+Nên bật các rule repository/branch sau:
 
 - Require status checks to pass before merging.
 - Require branches to be up to date before merging.
-- Restrict direct pushes to the protected branch.
-- Allow auto-merge after required checks pass.
+- Restrict direct pushes vào protected branch.
+- Allow auto-merge sau khi required checks pass.
 
-Disable these native review rules for solo maintenance:
+Với solo maintainer, nên tắt các native review rule này:
 
 - Require pull request reviews before merging.
 - Require review from Code Owners.
 
-## CODEOWNERS Role
+Lý do: nếu chỉ có một owner, native review gate có thể tự block chính owner dù CI và custom governance đã pass.
 
-Use CODEOWNERS as a metadata and audit layer, not as the native GitHub review
-enforcement layer.
+## Vai Trò Của CODEOWNERS
 
-For solo ownership, prefer exact usernames:
+Trong repo solo, hãy coi `CODEOWNERS` là metadata và audit layer, không phải enforcement layer native của GitHub.
+
+Nên dùng exact username:
 
 ```text
 * @your-username
 ```
 
-Avoid using team ownership for self-approve bypass paths:
+Không nên dùng team ownership cho self-approve bypass path:
 
 ```text
 * @org/team
 ```
 
-The custom sandbox-policy parser should continue to ignore team ownership for
-self-approval decisions. This keeps the bypass scope narrow and avoids allowing
-future team members to approve their own pull requests through team membership.
+Custom sandbox-policy parser nên tiếp tục ignore team ownership khi quyết định self-approval. Cách này giữ scope bypass nhỏ và tránh tình huống thành viên team trong tương lai tự approve PR của chính họ thông qua team membership.
 
-## Domain-Aware CI Policy
+## CI Theo Domain
 
-Enterprise-grade CI should avoid one monolithic app check that scans every
-application component for every app pull request. A change in `edge-client/**`
-should not be blocked by an unrelated backend, frontend, or nginx image scan.
+Enterprise-grade CI không nên dùng một app check khổng lồ cho mọi PR. Nếu chỉ đổi `edge-client/**`, PR không nên bị block bởi image scan của backend, frontend-admin hoặc nginx nếu những domain đó không đổi.
 
-Use domain lanes behind one required gateway:
+Nên dùng lane theo domain phía sau một gateway chung:
 
-- `backend/**` runs backend lint, tests, backend dependency checks, and backend image checks.
-- `frontend-admin/**` runs frontend tests, build, dependency checks, and frontend image checks.
-- `edge-client/**` runs edge-client tests, dependency checks, and edge image checks.
-- `nginx/**` runs nginx image checks.
-- Shared app files such as compose files, image catalog, and app CI workflows run the broader app lane.
+- `backend/**`: backend lint, tests, dependency checks, backend image checks.
+- `frontend-admin/**`: frontend tests, build, dependency checks, frontend image checks.
+- `edge-client/**`: edge-client tests, dependency checks, edge image checks.
+- `nginx/**`: nginx image checks.
+- Shared app files như compose files, image catalog, app CI workflows: chạy broader app lane.
 
-Branch protection should require the stable aggregator check (`CI Gateway /
-gateway`) instead of requiring each individual lane. Individual lane jobs may be
-skipped when their domain is not touched, and skipped jobs should not block
-merge eligibility.
+Branch protection nên require aggregator ổn định:
 
-## Full Verification
+```text
+CI Gateway / gateway
+```
 
-Full app image scans and compose-backed smoke tests should run when shared app
-contracts change, and should also run on release or scheduled workflows. They do
-not need to block an unrelated single-domain pull request.
+Không nên require trực tiếp từng job domain, vì các job đó có thể skipped khi path tương ứng không đổi. Required check bị skipped/missing có thể làm PR pending hoặc blocked sai.
 
-## Self-Approve Governance
+## Kiểm Tra Đầy Đủ
 
-Self-approve remains off by default. A bypass is valid only when:
+Full app image scans và compose-backed smoke tests nên chạy khi shared app contracts thay đổi. Chúng cũng nên chạy ở release hoặc scheduled workflows.
 
-- The actor is the repository owner.
-- The owner explicitly adds the governance label.
-- The label event is trusted and auditable.
-- The policy report records the actor, trusted label state, matched owners, and approvers.
+Không cần block một PR single-domain không liên quan bằng full scan của toàn bộ app.
 
-This gives the solo maintainer a clean merge flow without weakening automated
-checks or auditability.
+## Governance Cho Self-Approve
+
+Self-approve mặc định phải tắt. Bypass chỉ hợp lệ khi:
+
+- actor là repository owner
+- owner chủ động gắn governance label
+- label event trusted và audit được
+- policy report ghi actor, trusted label state, matched owners, approvers
+
+Cách này giúp solo maintainer có flow merge sạch mà vẫn giữ automated checks và auditability.

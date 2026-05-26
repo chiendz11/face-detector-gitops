@@ -171,6 +171,11 @@ jobs:
             "SANDBOX_NODE_MAX_SIZE": repo("SANDBOX_NODE_MAX_SIZE", "2"),
             "SANDBOX_NODE_DESIRED_SIZE": repo("SANDBOX_NODE_DESIRED_SIZE", "1"),
             "SSM_KMS_KEY_ID": repo("SSM_KMS_KEY_ID"),
+            "FACE_DETECTOR_BASE_DOMAIN": repo("FACE_DETECTOR_BASE_DOMAIN"),
+            "FACE_DETECTOR_DNS_PROVIDER": repo("FACE_DETECTOR_DNS_PROVIDER", "cloudflare"),
+            "FACE_DETECTOR_PUBLIC_DNS_ENABLED": repo("FACE_DETECTOR_PUBLIC_DNS_ENABLED", "false"),
+            "FACE_DETECTOR_PUBLIC_TLS_ENABLED": repo("FACE_DETECTOR_PUBLIC_TLS_ENABLED", "false"),
+            "CLOUDFLARE_ZONE_ID": repo("CLOUDFLARE_ZONE_ID"),
           }
 
           for key, value in values.items():
@@ -437,6 +442,11 @@ jobs:
           TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
           TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
           TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
+          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
         run: |
           export TF_VAR_deployment_environment="$ENVIRONMENT"
           export TF_VAR_cluster_name="$CLUSTER_NAME"
@@ -574,35 +584,81 @@ jobs:
         run: kubectl wait --namespace "$ARGOCD_NAMESPACE" --for=condition=available deployment/argocd-server --timeout=10m
 
       - name: Configure ArgoCD repository credentials
+        id: argocd-repo
         if: steps.cluster.outputs.exists == 'true'
         env:
-          ARGOCD_REPO_USERNAME: ${{ secrets.ARGOCD_REPO_USERNAME }}
-          ARGOCD_REPO_TOKEN: ${{ secrets.ARGOCD_REPO_TOKEN }}
+          ARGOCD_REPO_DEPLOY_KEY: ${{ secrets.ARGOCD_REPO_DEPLOY_KEY || '' }}
+          ARGOCD_GITHUB_APP_ID: ${{ secrets.ARGOCD_GITHUB_APP_ID || vars.ARGOCD_GITHUB_APP_ID || '' }}
+          ARGOCD_GITHUB_APP_INSTALLATION_ID: ${{ secrets.ARGOCD_GITHUB_APP_INSTALLATION_ID || vars.ARGOCD_GITHUB_APP_INSTALLATION_ID || '' }}
+          ARGOCD_GITHUB_APP_PRIVATE_KEY: ${{ secrets.ARGOCD_GITHUB_APP_PRIVATE_KEY || '' }}
+          ARGOCD_REPO_USERNAME: ${{ secrets.ARGOCD_REPO_USERNAME || '' }}
+          ARGOCD_REPO_TOKEN: ${{ secrets.ARGOCD_REPO_TOKEN || '' }}
         run: |
-          if [ -z "$ARGOCD_REPO_TOKEN" ]; then
-            echo "ARGOCD_REPO_TOKEN is not set. Assuming the repository is public."
+          set -euo pipefail
+
+          HTTPS_REPO_URL="https://github.com/${GITHUB_REPOSITORY}.git"
+          SSH_REPO_URL="git@github.com:${GITHUB_REPOSITORY}.git"
+          REPO_URL="$HTTPS_REPO_URL"
+          CREDENTIAL_MODE="public"
+
+          if [ -n "$ARGOCD_GITHUB_APP_ID" ] && [ -n "$ARGOCD_GITHUB_APP_INSTALLATION_ID" ] && [ -n "$ARGOCD_GITHUB_APP_PRIVATE_KEY" ]; then
+            CREDENTIAL_MODE="github-app"
+          elif [ -n "$ARGOCD_REPO_DEPLOY_KEY" ]; then
+            REPO_URL="$SSH_REPO_URL"
+            CREDENTIAL_MODE="deploy-key"
+          elif [ -n "$ARGOCD_REPO_TOKEN" ]; then
+            CREDENTIAL_MODE="legacy-token"
+          fi
+
+          {
+            echo "repo_url=${REPO_URL}"
+            echo "credential_mode=${CREDENTIAL_MODE}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$CREDENTIAL_MODE" = "public" ]; then
+            echo "No ArgoCD repository credential secret is set. Assuming the repository is public."
             exit 0
           fi
 
-          REPO_USERNAME="$ARGOCD_REPO_USERNAME"
-          if [ -z "$REPO_USERNAME" ]; then
-            REPO_USERNAME="git"
-          fi
+          export REPO_URL CREDENTIAL_MODE
+          python3 - <<'PY' | kubectl apply -f -
+          import json
+          import os
 
-          cat <<EOF | kubectl apply -f -
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: repo-face-detector
-            namespace: ${ARGOCD_NAMESPACE}
-            labels:
-              argocd.argoproj.io/secret-type: repository
-          stringData:
-            type: git
-            url: https://github.com/${GITHUB_REPOSITORY}.git
-            username: ${REPO_USERNAME}
-            password: ${ARGOCD_REPO_TOKEN}
-          EOF
+          mode = os.environ["CREDENTIAL_MODE"]
+          repo_url = os.environ["REPO_URL"]
+
+          def scalar(name: str, value: str) -> None:
+              print(f"  {name}: {json.dumps(value)}")
+
+          def block(name: str, value: str) -> None:
+              print(f"  {name}: |")
+              for line in value.rstrip("\n").splitlines():
+                  print(f"    {line}")
+
+          print("apiVersion: v1")
+          print("kind: Secret")
+          print("metadata:")
+          print("  name: repo-face-detector")
+          print(f"  namespace: {os.environ['ARGOCD_NAMESPACE']}")
+          print("  labels:")
+          print("    argocd.argoproj.io/secret-type: repository")
+          print("stringData:")
+          scalar("type", "git")
+          scalar("url", repo_url)
+
+          if mode == "deploy-key":
+              block("sshPrivateKey", os.environ["ARGOCD_REPO_DEPLOY_KEY"])
+          elif mode == "github-app":
+              scalar("githubAppID", os.environ["ARGOCD_GITHUB_APP_ID"])
+              scalar("githubAppInstallationID", os.environ["ARGOCD_GITHUB_APP_INSTALLATION_ID"])
+              block("githubAppPrivateKey", os.environ["ARGOCD_GITHUB_APP_PRIVATE_KEY"])
+          elif mode == "legacy-token":
+              scalar("username", os.environ.get("ARGOCD_REPO_USERNAME") or "git")
+              scalar("password", os.environ["ARGOCD_REPO_TOKEN"])
+          else:
+              raise SystemExit(f"Unsupported ArgoCD repository credential mode: {mode}")
+          PY
 
       - name: Ensure application namespace exists
         if: steps.cluster.outputs.exists == 'true'
@@ -648,20 +704,123 @@ jobs:
             --from-env-file=.env.runtime \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Resolve public endpoint Helm parameters
+        if: steps.cluster.outputs.exists == 'true'
+        id: public-endpoint-config
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+          PULL_REQUEST_NUMBER: ${{ steps.context.outputs.pull_request_number }}
+          SANDBOX_KEY: ${{ steps.context.outputs.sandbox_key }}
+          BASE_DOMAIN: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          REQUEST_PUBLIC_DNS: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          REQUEST_PUBLIC_TLS: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
+          EKS_OUTPUTS_PATH: ${{ runner.temp }}/eks-outputs.json
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+
+          def enabled(value: str) -> bool:
+              return value.strip().lower() in {"1", "true", "yes", "on"}
+
+          def normalize_domain(value: str) -> str:
+              return value.strip().lower().rstrip(".")
+
+          outputs_path = Path(os.environ["EKS_OUTPUTS_PATH"])
+          outputs = json.loads(outputs_path.read_text(encoding="utf-8")) if outputs_path.exists() else {}
+
+          def output_value(name: str):
+              return outputs.get(name, {}).get("value")
+
+          base_domain = normalize_domain(
+              os.environ.get("BASE_DOMAIN", "") or str(output_value("public_dns_base_domain") or "")
+          )
+          public_dns_enabled = (
+              enabled(os.environ.get("REQUEST_PUBLIC_DNS", "false"))
+              and bool(output_value("public_dns_enabled"))
+              and bool(base_domain)
+          )
+          certificate_arn = str(output_value("public_tls_certificate_arn") or "").strip()
+          public_tls_enabled = (
+              public_dns_enabled
+              and enabled(os.environ.get("REQUEST_PUBLIC_TLS", "false"))
+              and bool(certificate_arn)
+          )
+
+          hostname = ""
+          if public_dns_enabled:
+              environment = os.environ["DEPLOYMENT_ENVIRONMENT"]
+              if environment == "production":
+                  hostname = base_domain
+              elif environment == "staging":
+                  hostname = f"staging.{base_domain}"
+              else:
+                  pr_number = os.environ.get("PULL_REQUEST_NUMBER", "").strip()
+                  sandbox_key = os.environ.get("SANDBOX_KEY", "").strip()
+                  label = f"sandbox-pr-{pr_number}" if pr_number else sandbox_key
+                  hostname = f"{label}.{base_domain}"
+
+          parameter_lines = []
+          if public_dns_enabled:
+              parameter_lines.extend(
+                  [
+                      "        - name: publicDns.enabled",
+                      '          value: "true"',
+                      "        - name: publicDns.hostname",
+                      f"          value: {json.dumps(hostname)}",
+                  ]
+              )
+          if public_tls_enabled:
+              parameter_lines.extend(
+                  [
+                      "        - name: publicTls.enabled",
+                      '          value: "true"',
+                      "        - name: publicTls.certificateArn",
+                      f"          value: {json.dumps(certificate_arn)}",
+                  ]
+              )
+
+          scheme = "https" if public_tls_enabled else "http"
+          base_url = f"{scheme}://{hostname}" if hostname else ""
+
+          print("parameter_block<<EOF")
+          print("\n".join(parameter_lines))
+          print("EOF")
+          print(f"hostname={hostname}")
+          print(f"base_url={base_url}")
+          print(f"public_dns_enabled={str(public_dns_enabled).lower()}")
+          print(f"public_tls_enabled={str(public_tls_enabled).lower()}")
+          PY
+
+      - name: Apply ArgoCD project
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          ARGOCD_REPO_URL: ${{ steps.argocd-repo.outputs.repo_url }}
+        run: envsubst < deploy/argocd/face-detector-project.yaml.tpl | kubectl apply -f -
+
       - name: Apply ArgoCD application
         if: steps.cluster.outputs.exists == 'true'
         env:
           APPLICATION_TEMPLATE: ${{ steps.context.outputs.application_template }}
+          ARGOCD_REPO_URL: ${{ steps.argocd-repo.outputs.repo_url }}
           TARGET_REVISION: ${{ steps.context.outputs.target_revision }}
           BACKEND_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.backend }}
           FRONTEND_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.frontend }}
           NGINX_IMAGE_REPOSITORY: ${{ steps.image-meta.outputs.nginx }}
           IMAGE_DIGEST_PARAMETER: ${{ steps.sandbox-image-locks.outputs.parameter_block }}
           IMAGE_PULL_SECRET_PARAMETER: ${{ steps.ghcr-auth.outputs.parameter_block }}
+          PUBLIC_ENDPOINT_PARAMETER: ${{ steps.public-endpoint-config.outputs.parameter_block }}
         run: envsubst < "$APPLICATION_TEMPLATE" | kubectl apply -f -
 
+      - name: Show production manual sync gate
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment == 'production'
+        run: |
+          echo "Production ArgoCD Application has been updated, but automated sync is disabled."
+          echo "A trusted operator must manually sync face-detector-production in ArgoCD."
+
       - name: Wait for ArgoCD sync to requested revision
-        if: steps.cluster.outputs.exists == 'true'
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production'
         env:
           DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
           SOURCE_GIT_SHA: ${{ inputs.source_git_sha || '' }}
@@ -711,7 +870,7 @@ jobs:
           exit 1
 
       - name: Wait for application rollout
-        if: steps.cluster.outputs.exists == 'true'
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production'
         run: |
           for deployment in backend frontend-admin nginx; do
             for _ in $(seq 1 30); do
@@ -727,7 +886,7 @@ jobs:
           kubectl rollout status deployment/worker --namespace "$APP_NAMESPACE" --timeout=10m || true
 
       - name: Dump rollout diagnostics
-        if: failure() && steps.cluster.outputs.exists == 'true'
+        if: failure() && steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production'
         env:
           DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
         run: |
@@ -773,7 +932,7 @@ jobs:
           done
 
       - name: Wait for public load balancer hostname
-        if: steps.cluster.outputs.exists == 'true'
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production'
         id: public-host
         run: |
           HOSTNAME=""
@@ -786,15 +945,42 @@ jobs:
           done
           echo "hostname=${HOSTNAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve public app endpoint
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production'
+        id: public-endpoint
+        env:
+          STABLE_HOSTNAME: ${{ steps.public-endpoint-config.outputs.hostname }}
+          STABLE_BASE_URL: ${{ steps.public-endpoint-config.outputs.base_url }}
+          LOAD_BALANCER_HOSTNAME: ${{ steps.public-host.outputs.hostname }}
+        run: |
+          if [ -n "$STABLE_BASE_URL" ]; then
+            hostname="$STABLE_HOSTNAME"
+            base_url="$STABLE_BASE_URL"
+            source="stable-dns"
+          elif [ -n "$LOAD_BALANCER_HOSTNAME" ]; then
+            hostname="$LOAD_BALANCER_HOSTNAME"
+            base_url="http://$LOAD_BALANCER_HOSTNAME"
+            source="load-balancer"
+          else
+            hostname=""
+            base_url=""
+            source="none"
+          fi
+          {
+            echo "hostname=$hostname"
+            echo "base_url=$base_url"
+            echo "source=$source"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Show public URL
-        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
-        run: echo "Application available at http://${{ steps.public-host.outputs.hostname }}/admin/"
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production' && steps.public-endpoint.outputs.base_url != ''
+        run: echo "Application available at ${{ steps.public-endpoint.outputs.base_url }}/admin/ via ${{ steps.public-endpoint.outputs.source }}"
 
       - name: Wait for public app readiness
-        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production' && steps.public-endpoint.outputs.base_url != ''
         env:
-          PUBLIC_HOSTNAME: ${{ steps.public-host.outputs.hostname }}
-          FACE_DETECTOR_BASE_URL: http://${{ steps.public-host.outputs.hostname }}
+          PUBLIC_HOSTNAME: ${{ steps.public-endpoint.outputs.hostname }}
+          FACE_DETECTOR_BASE_URL: ${{ steps.public-endpoint.outputs.base_url }}
         run: |
           set -euo pipefail
 
@@ -819,11 +1005,11 @@ jobs:
           exit 1
 
       - name: Install post-deploy smoke test dependencies
-        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production' && steps.public-endpoint.outputs.base_url != ''
         run: python3 -m pip install -r backend/requirements-ci.txt
 
       - name: Resolve smoke test credentials
-        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production' && steps.public-endpoint.outputs.base_url != ''
         id: smoke-credentials
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
@@ -849,9 +1035,9 @@ jobs:
           PY
 
       - name: Run post-deploy smoke test
-        if: steps.cluster.outputs.exists == 'true' && steps.public-host.outputs.hostname != ''
+        if: steps.cluster.outputs.exists == 'true' && steps.context.outputs.deployment_environment != 'production' && steps.public-endpoint.outputs.base_url != ''
         env:
-          FACE_DETECTOR_BASE_URL: http://${{ steps.public-host.outputs.hostname }}
+          FACE_DETECTOR_BASE_URL: ${{ steps.public-endpoint.outputs.base_url }}
           FACE_DETECTOR_OBJECT_STORE_MODE: none
           FACE_DETECTOR_TIMEOUT_SECONDS: "60"
           DEPLOYMENT_ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}

@@ -73,6 +73,10 @@ jobs:
             --set nginx.image.repository=ghcr.io/example/face-detector-nginx \
             --set nginx.image.tag=test-render \
             --set nginx.image.digest=sha256:3333333333333333333333333333333333333333333333333333333333333333 \
+            --set publicDns.enabled=true \
+            --set-string publicDns.hostname=staging.face.example.com \
+            --set publicTls.enabled=true \
+            --set-string publicTls.certificateArn=arn:aws:acm:ap-southeast-1:123456789012:certificate/00000000-0000-0000-0000-000000000000 \
             -f deploy/helm/face-detector/values-staging.yaml > .artifacts/helm/staging.yaml
           helm template face-detector deploy/helm/face-detector \
             --set backend.image.repository=ghcr.io/example/face-detector-backend \

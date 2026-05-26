@@ -1,60 +1,153 @@
 # Sandbox Policy
 
-This document defines the custom sandbox governance gate for pull requests.
+Tài liệu này mô tả custom governance gate tên `Sandbox Policy` cho pull request.
 
-## Goals
+Mục tiêu của policy này là tách rõ ba quyết định khác nhau:
 
-- Keep normal application changes fast.
-- Require production-like validation for critical control-plane changes.
-- Keep deployment intent, review bypass, and risk waiver as separate decisions.
-- Preserve an audit trail through labels, `report.json`, PR comments, and workflow artifacts.
+- có cần review bypass hay không
+- có cần deploy sandbox thật hay không
+- có chấp nhận rủi ro để merge không deploy sandbox hay không
 
-## Lanes
+## Mục Tiêu
 
-- `fast`: local, low-blast-radius changes. Sandbox policy passes.
-- `heavy` + non-critical: the bot may add `sandbox-recommended`. This is advisory and does not block merge by itself.
-- `heavy` + critical: the bot adds `sandbox-required`. Merge is blocked until sandbox validation passes or the owner applies an explicit waiver.
+- Giữ các thay đổi app bình thường chạy nhanh.
+- Bắt buộc validation gần production cho các thay đổi chạm control plane hoặc hạ tầng quan trọng.
+- Không trộn `self-approve`, `deploy-sandbox`, và `risk waiver` vào cùng một nhãn.
+- Luôn có audit trail qua label, `report.json`, PR comment và workflow artifact.
 
-Critical paths include workflow/policy/control-plane files, Terraform, deploy manifests, ingress/reverse proxy files, database migrations, IAM/network/auth paths, and sandbox policy evaluator scripts.
+## Các Lane
 
-## Labels
+### Fast Lane
 
-- `allow-self-approve`: owner-only review governance opt-in. It does not bypass `sandbox-required`.
-- `sandbox-recommended`: bot advisory label for heavy non-critical PRs.
-- `sandbox-required`: bot hard-gate label for critical PRs.
-- `deploy-sandbox` / `deploy-preview`: owner-only deployment intent labels. They let auto-apply run; they are not waiver labels.
-- `sandbox-validated`: bot label refreshed after sandbox apply and smoke/bootstrap validation pass for the current PR head.
-- `skip-sandbox-approved`: owner-only explicit waiver. Use rarely, keep it visible, and rely on the report/comment artifact for audit.
-- `sandbox-active`: operational state for quota/cleanup, not reviewer intent.
+Áp dụng cho thay đổi local, ít blast radius.
 
-Human-trusted labels are valid only when the latest label event actor is `github.repository_owner` and not a bot. System-trusted labels are valid only when added by `github-actions[bot]` for the current PR head.
+Ví dụ:
 
-## Pass Conditions
+- sửa logic nhỏ trong một service
+- sửa UI không đụng backend contract
+- thêm test
+- sửa tài liệu
 
-Sandbox policy passes when one of these is true:
+Kết quả: `Sandbox Policy` pass.
 
-- the PR is fast lane.
-- the PR is heavy but non-critical, producing only `sandbox-recommended`.
-- the PR is critical and has trusted `sandbox-validated`.
-- the PR is critical and has trusted `skip-sandbox-approved`.
+### Heavy Non-Critical Lane
 
-Sandbox policy does not pass merely because `deploy-sandbox`, `deploy-preview`, or `allow-self-approve` exists.
+Áp dụng cho thay đổi rộng hơn nhưng chưa chạm vùng hạ tầng/control-plane nguy hiểm.
 
-## Auto-Apply
+Bot có thể gắn:
 
-Auto-apply is eligible only when:
+```text
+sandbox-recommended
+```
 
-- the PR is same-repository, non-draft, and not Dependabot.
-- a trusted `deploy-sandbox` or `deploy-preview` label exists.
-- the PR is not already `sandbox-validated`.
-- no trusted `skip-sandbox-approved` waiver exists.
-- required CI gates are green.
+Nhãn này chỉ là khuyến nghị. Nó không tự block merge.
 
-For critical PRs, auto-apply can run while `Sandbox Policy` is still failing. The policy passes later when the workflow refreshes `sandbox-validated`.
+### Heavy Critical Lane
+
+Áp dụng cho thay đổi chạm vùng quan trọng.
+
+Bot gắn:
+
+```text
+sandbox-required
+```
+
+Khi đó PR bị block cho đến khi có một trong hai điều kiện:
+
+- sandbox được deploy và validation pass, rồi bot gắn `sandbox-validated`
+- owner gắn waiver rõ ràng bằng `skip-sandbox-approved`
+
+Critical paths gồm:
+
+- `.github/workflows/**`
+- `.github/actions/**`
+- `policies/**`
+- Terraform
+- Helm/deploy manifests
+- ingress/reverse proxy
+- database migrations
+- IAM/network/auth
+- script evaluator của sandbox policy
+
+## Ý Nghĩa Các Label
+
+- `allow-self-approve`: owner chủ động bật review governance bypass. Không bypass `sandbox-required`.
+- `sandbox-recommended`: bot khuyến nghị deploy sandbox cho PR heavy non-critical.
+- `sandbox-required`: bot hard-gate PR critical. Cần sandbox validation hoặc waiver.
+- `deploy-sandbox` / `deploy-preview`: owner thể hiện intent muốn deploy sandbox thật. Đây không phải waiver.
+- `sandbox-validated`: bot gắn sau khi sandbox apply + bootstrap/smoke validation pass cho đúng PR head hiện tại.
+- `skip-sandbox-approved`: owner chấp nhận rủi ro, merge không deploy sandbox. Dùng hiếm và phải visible.
+- `sandbox-active`: trạng thái vận hành để quota/cleanup biết sandbox đang tồn tại. Reviewer không tự gắn nhãn này.
+
+## Trusted Label
+
+Label do người gắn chỉ hợp lệ khi:
+
+- latest label event actor là `github.repository_owner`
+- actor không phải bot
+
+Các label thuộc nhóm này:
+
+```text
+allow-self-approve
+deploy-sandbox
+deploy-preview
+skip-sandbox-approved
+```
+
+Label do hệ thống gắn chỉ hợp lệ khi được `github-actions[bot]` gắn cho đúng PR head.
+
+Các label thuộc nhóm này:
+
+```text
+sandbox-recommended
+sandbox-required
+sandbox-validated
+ready-for-deploy
+```
+
+## Điều Kiện Pass
+
+`Sandbox Policy` pass khi một trong các trường hợp sau đúng:
+
+- PR thuộc fast lane.
+- PR heavy nhưng non-critical, chỉ có `sandbox-recommended`.
+- PR critical có trusted `sandbox-validated`.
+- PR critical có trusted `skip-sandbox-approved`.
+
+Policy không pass chỉ vì tồn tại các label sau:
+
+```text
+deploy-sandbox
+deploy-preview
+allow-self-approve
+```
+
+Lý do: ba nhãn này có ý nghĩa khác nhau. `allow-self-approve` là review governance, còn sandbox là environment governance.
+
+## Auto-Apply Sandbox
+
+Sandbox auto-apply chỉ đủ điều kiện khi:
+
+- PR cùng repo, không phải fork.
+- PR không ở draft.
+- PR không phải Dependabot.
+- Có trusted `deploy-sandbox` hoặc `deploy-preview`.
+- PR chưa có `sandbox-validated` hợp lệ.
+- Không có trusted `skip-sandbox-approved`.
+- Các CI gate cần thiết đã xanh.
+
+Với PR critical, auto-apply có thể chạy trong khi `Sandbox Policy` vẫn đang fail. Policy chỉ pass sau khi workflow deploy xong và bot refresh `sandbox-validated`.
 
 ## Report
 
-The evaluator writes `.artifacts/sandbox-policy/report.json` with the governance decision. Important fields include:
+Evaluator ghi file:
+
+```text
+.artifacts/sandbox-policy/report.json
+```
+
+Các field quan trọng:
 
 - `classification`
 - `riskLevel`
@@ -68,12 +161,13 @@ The evaluator writes `.artifacts/sandbox-policy/report.json` with the governance
 - `matchedOwners`
 - `approvers`
 
-`block: true` is the merge-blocking signal for the `Sandbox Policy` check.
+`block: true` là tín hiệu để check `Sandbox Policy` fail và block merge.
 
-## Operations
+## Vận Hành
 
-- Require the `Sandbox Policy` check on `master` if this gate should enforce mergeability.
-- Keep `deploy-sandbox` and `skip-sandbox-approved` owner-only.
-- Remove deploy labels when sandbox validation is no longer needed.
-- Destroying a sandbox must clear stale `sandbox-validated`.
-- For solo projects, `github.repository_owner` is the correct trusted human boundary. For multi-team repos, replace it with an allowlist, environment approver, or team-based authorization.
+- Nếu muốn policy thật sự enforce merge, require check `Sandbox Policy / evaluate` trên `master`.
+- Giữ `deploy-sandbox` và `skip-sandbox-approved` owner-only.
+- Gỡ deploy label khi không cần sandbox nữa.
+- Destroy sandbox phải xóa stale `sandbox-validated`.
+- Với solo project, `github.repository_owner` là ranh giới trusted human hợp lý.
+- Với repo nhiều team, thay `github.repository_owner` bằng allowlist, environment approver, hoặc team authorization.
