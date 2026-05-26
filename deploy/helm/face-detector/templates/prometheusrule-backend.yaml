@@ -1,0 +1,61 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Values.backend.service.name }}
+  labels:
+    app.kubernetes.io/name: face-detector
+    app.kubernetes.io/component: backend
+spec:
+  groups:
+    - name: face-detector.backend
+      rules:
+        - alert: FaceDetectorBackendDown
+          expr: absent(up{namespace="{{ .Release.Namespace }}", service="{{ .Values.backend.service.name }}"}) or min(up{namespace="{{ .Release.Namespace }}", service="{{ .Values.backend.service.name }}"}) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Face Detector backend is not scrapeable
+            description: Prometheus cannot scrape the backend metrics endpoint in namespace {{ .Release.Namespace }}.
+        - alert: FaceDetectorBackendHighErrorRate
+          expr: sum(rate(face_detector_http_requests_total{namespace="{{ .Release.Namespace }}", status_code=~"5.."}[5m])) / clamp_min(sum(rate(face_detector_http_requests_total{namespace="{{ .Release.Namespace }}"}[5m])), 0.001) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Face Detector backend has a high 5xx rate
+            description: More than 5 percent of backend HTTP requests returned 5xx for 10 minutes.
+        - alert: FaceDetectorBackendHighLatencyP95
+          expr: histogram_quantile(0.95, sum by (le) (rate(face_detector_http_request_duration_seconds_bucket{namespace="{{ .Release.Namespace }}"}[5m]))) > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Face Detector backend p95 latency is high
+            description: Backend p95 HTTP latency has stayed above 2 seconds for 10 minutes.
+        - alert: FaceDetectorDependencyUnhealthy
+          expr: min(face_detector_dependency_health_status{namespace="{{ .Release.Namespace }}"}) < 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Face Detector dependency is unhealthy
+            description: Backend readiness reported an unhealthy or unknown dependency.
+        - alert: FaceDetectorDeploymentUnavailable
+          expr: kube_deployment_status_replicas_available{namespace="{{ .Release.Namespace }}", deployment=~"backend|frontend-admin|nginx|worker"} < 1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Face Detector deployment has no available replicas
+            description: A core Face Detector deployment has no available replicas for 10 minutes.
+        - alert: FaceDetectorPodRestartSpike
+          expr: sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}"}[15m])) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Face Detector pod restart spike
+            description: A Face Detector pod restarted more than 3 times in 15 minutes.
+{{- end }}

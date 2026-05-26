@@ -45,7 +45,7 @@ spec:
 {{ toYaml .Values.backend.resources | indent 12 }}
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: {{ .Values.backend.service.port }}
             initialDelaySeconds: 10
             periodSeconds: 10

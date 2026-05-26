@@ -9,6 +9,22 @@ publicTls:
   enabled: false
   certificateArn: ""
 
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+  prometheusRule:
+    enabled: true
+  alertmanagerConfig:
+    enabled: false
+    receiver: slack
+    secretName: alertmanager-receiver
+    secretKey: webhook-url
+    channel: ""
+    sendResolved: true
+
 backend:
   replicaCount: 1
   image:

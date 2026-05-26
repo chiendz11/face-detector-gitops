@@ -589,6 +589,9 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
         self.assertIn("kind: Job", project_template)
         self.assertIn("kind: HorizontalPodAutoscaler", project_template)
         self.assertIn("kind: ScaledObject", project_template)
+        self.assertIn("kind: ServiceMonitor", project_template)
+        self.assertIn("kind: PrometheusRule", project_template)
+        self.assertIn("kind: AlertmanagerConfig", project_template)
         self.assertIn("namespaceResourceBlacklist", project_template)
         self.assertIn("kind: Secret", project_template)
 
@@ -644,6 +647,7 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
         self.assertIn("argocd_notifications_recipients", eks_main)
         self.assertIn("trigger.on-sync-failed", eks_main)
         self.assertIn("trigger.on-health-degraded", eks_main)
+        self.assertIn("serviceMonitor = {", eks_main)
 
         self.assertIn('variable "argocd_oidc_config"', eks_variables)
         self.assertIn('variable "argocd_admin_rbac_subjects"', eks_variables)
@@ -967,6 +971,39 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn("TF_VAR_public_dns_provider", plan_workflow)
         self.assertIn("TF_VAR_cloudflare_zone_id", plan_workflow)
 
+    def test_eks_installs_internal_monitoring_stack(self) -> None:
+        main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
+        variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
+        outputs_tf = (REPO_ROOT / "terraform/eks/outputs.tf").read_text(encoding="utf-8")
+        infrastructure_workflow = (REPO_ROOT / ".github/workflows/infrastructure.yml").read_text(encoding="utf-8")
+
+        self.assertIn('variable "enable_monitoring"', variables_tf)
+        self.assertIn('variable "monitoring_namespace"', variables_tf)
+        self.assertIn('variable "kube_prometheus_stack_chart_version"', variables_tf)
+        self.assertIn('default     = "85.3.3"', variables_tf)
+
+        self.assertIn('resource "kubernetes_namespace" "monitoring"', main_tf)
+        self.assertIn('resource "helm_release" "kube_prometheus_stack"', main_tf)
+        self.assertIn("additionalPrometheusRulesMap", main_tf)
+        self.assertNotIn('resource "kubernetes_manifest" "platform_prometheus_rule"', main_tf)
+        self.assertIn('chart            = "kube-prometheus-stack"', main_tf)
+        self.assertIn('repository       = "https://prometheus-community.github.io/helm-charts"', main_tf)
+        self.assertIn("alertmanagerConfigSelector", main_tf)
+        self.assertIn("alertmanagerConfigNamespaceSelector", main_tf)
+        self.assertIn('serviceMonitorSelectorNilUsesHelmValues', main_tf)
+        self.assertIn('serviceMonitorNamespaceSelector', main_tf)
+        self.assertIn('ruleSelectorNilUsesHelmValues', main_tf)
+        self.assertIn("FaceDetectorArgoCdAppDegraded", main_tf)
+        self.assertIn("FaceDetectorArgoCdAppOutOfSync", main_tf)
+        self.assertIn("FaceDetectorKubernetesNodeNotReady", main_tf)
+        self.assertIn('kubeControllerManager', main_tf)
+        self.assertIn('kubeEtcd', main_tf)
+        self.assertIn('kubeScheduler', main_tf)
+        self.assertIn('type = "ClusterIP"', main_tf)
+        self.assertIn("monitoring_enabled", outputs_tf)
+        self.assertIn("monitoring_namespace", outputs_tf)
+        self.assertIn("helm_release.kube_prometheus_stack[0]|kube-prometheus-stack|monitoring", infrastructure_workflow)
+
 
 class WorkflowRoleSplitContractTest(unittest.TestCase):
     def test_sandbox_workflows_load_task_scoped_role_arns_with_legacy_fallback(self) -> None:
@@ -1128,6 +1165,45 @@ class HelmChartContractTest(unittest.TestCase):
         self.assertIn("name: https", template)
         self.assertIn("--set publicDns.enabled=true", infra_ci)
         self.assertIn("--set publicTls.enabled=true", infra_ci)
+
+    def test_backend_chart_exposes_internal_monitoring_resources(self) -> None:
+        service_monitor = (REPO_ROOT / "deploy/helm/face-detector/templates/servicemonitor-backend.yaml").read_text(
+            encoding="utf-8"
+        )
+        prometheus_rule = (REPO_ROOT / "deploy/helm/face-detector/templates/prometheusrule-backend.yaml").read_text(
+            encoding="utf-8"
+        )
+        alertmanager_config = (REPO_ROOT / "deploy/helm/face-detector/templates/alertmanagerconfig.yaml").read_text(
+            encoding="utf-8"
+        )
+        dashboard = (REPO_ROOT / "deploy/helm/face-detector/templates/grafana-dashboard-overview.yaml").read_text(
+            encoding="utf-8"
+        )
+        values = yaml.safe_load((REPO_ROOT / "deploy/helm/face-detector/values.yaml").read_text(encoding="utf-8"))
+
+        self.assertTrue(values["monitoring"]["enabled"])
+        self.assertTrue(values["monitoring"]["serviceMonitor"]["enabled"])
+        self.assertTrue(values["monitoring"]["prometheusRule"]["enabled"])
+        self.assertFalse(values["monitoring"]["alertmanagerConfig"]["enabled"])
+        self.assertIn("kind: ServiceMonitor", service_monitor)
+        self.assertIn("path: /metrics", service_monitor)
+        self.assertIn("namespaceSelector:", service_monitor)
+        self.assertIn("kind: PrometheusRule", prometheus_rule)
+        self.assertIn("FaceDetectorBackendDown", prometheus_rule)
+        self.assertIn("FaceDetectorBackendHighErrorRate", prometheus_rule)
+        self.assertIn("FaceDetectorBackendHighLatencyP95", prometheus_rule)
+        self.assertIn("FaceDetectorDependencyUnhealthy", prometheus_rule)
+        self.assertIn("FaceDetectorDeploymentUnavailable", prometheus_rule)
+        self.assertIn("FaceDetectorPodRestartSpike", prometheus_rule)
+        self.assertIn("face_detector_http_requests_total", prometheus_rule)
+        self.assertIn("face_detector_http_request_duration_seconds_bucket", prometheus_rule)
+        self.assertIn("kind: AlertmanagerConfig", alertmanager_config)
+        self.assertIn("slackConfigs", alertmanager_config)
+        self.assertIn("webhookConfigs", alertmanager_config)
+        self.assertIn("kind: ConfigMap", dashboard)
+        self.assertIn('grafana_dashboard: "1"', dashboard)
+        self.assertIn("Face Detector Overview", dashboard)
+        self.assertIn("face_detector_dependency_health_status", dashboard)
 
 
 class ReusableAppReleaseContractTest(unittest.TestCase):

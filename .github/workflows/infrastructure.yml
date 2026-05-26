@@ -450,6 +450,7 @@ jobs:
           helm_release.argocd|argocd|argocd
           helm_release.metrics_server|metrics-server|kube-system
           helm_release.keda[0]|keda|keda
+          helm_release.kube_prometheus_stack[0]|kube-prometheus-stack|monitoring
           helm_release.cluster_autoscaler[0]|cluster-autoscaler|kube-system
           EOF
 

@@ -1,0 +1,39 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.alertmanagerConfig.enabled }}
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: face-detector-alert-routing
+  labels:
+    app.kubernetes.io/name: face-detector
+    app.kubernetes.io/component: monitoring
+spec:
+  route:
+    groupBy:
+      - alertname
+      - namespace
+      - severity
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    receiver: face-detector-primary
+  receivers:
+    - name: face-detector-primary
+{{- if eq .Values.monitoring.alertmanagerConfig.receiver "slack" }}
+      slackConfigs:
+        - apiURL:
+            name: {{ .Values.monitoring.alertmanagerConfig.secretName | quote }}
+            key: {{ .Values.monitoring.alertmanagerConfig.secretKey | quote }}
+          channel: {{ required "monitoring.alertmanagerConfig.channel is required for slack receiver" .Values.monitoring.alertmanagerConfig.channel | quote }}
+          sendResolved: {{ .Values.monitoring.alertmanagerConfig.sendResolved }}
+          title: '{{ "{{" }} .CommonLabels.alertname {{ "}}" }}'
+          text: '{{ "{{" }} range .Alerts {{ "}}" }}{{ "{{" }} .Annotations.summary {{ "}}" }} - {{ "{{" }} .Annotations.description {{ "}}" }}{{ "{{" }} "\n" {{ "}}" }}{{ "{{" }} end {{ "}}" }}'
+{{- else if eq .Values.monitoring.alertmanagerConfig.receiver "webhook" }}
+      webhookConfigs:
+        - urlSecret:
+            name: {{ .Values.monitoring.alertmanagerConfig.secretName | quote }}
+            key: {{ .Values.monitoring.alertmanagerConfig.secretKey | quote }}
+          sendResolved: {{ .Values.monitoring.alertmanagerConfig.sendResolved }}
+{{- else }}
+{{- fail "monitoring.alertmanagerConfig.receiver must be slack or webhook" }}
+{{- end }}
+{{- end }}

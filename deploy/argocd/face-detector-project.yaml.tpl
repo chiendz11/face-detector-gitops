@@ -24,6 +24,12 @@ spec:
       kind: HorizontalPodAutoscaler
     - group: keda.sh
       kind: ScaledObject
+    - group: monitoring.coreos.com
+      kind: ServiceMonitor
+    - group: monitoring.coreos.com
+      kind: PrometheusRule
+    - group: monitoring.coreos.com
+      kind: AlertmanagerConfig
   namespaceResourceBlacklist:
     - group: ""
       kind: Secret
