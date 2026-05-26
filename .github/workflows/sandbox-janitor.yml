@@ -75,15 +75,7 @@ jobs:
               }
 
               const labels = pull.labels.map((label) => label.name);
-              if (!labels.includes(activeLabel)) {
-                return false;
-              }
-
-              if (mode === 'nightly') {
-                return true;
-              }
-
-              return true;
+              return labels.includes(activeLabel);
             });
 
             const selected = [];
@@ -129,24 +121,18 @@ jobs:
                 reason = 'closed_pr_with_active_sandbox';
               } else if (teardownLabelTrusted) {
                 reason = 'explicit_teardown_label';
-              } else if (mode === 'nightly') {
-                reason = 'nightly_cleanup';
               } else if (pull.draft) {
                 reason = 'draft_pr_with_active_sandbox';
               } else if (ageHours >= ttlHours) {
                 reason = `ttl_expired_${ageHours.toFixed(1)}h`;
               }
 
-              if (mode === 'ttl') {
-                if (!reason) {
-                  if (labels.includes(teardownLabel) && !teardownLabelTrusted) {
-                    core.warning(`Ignoring untrusted teardown-sandbox label on PR #${pull.number}; latest label actor was ${teardownLabelEvent?.actor?.login || '(unknown)'}.`);
-                  }
-                  core.info(`Skipping PR #${pull.number}; sandbox age ${ageHours.toFixed(1)}h is below the TTL.`);
-                  continue;
+              if (!reason) {
+                if (labels.includes(teardownLabel) && !teardownLabelTrusted) {
+                  core.warning(`Ignoring untrusted teardown-sandbox label on PR #${pull.number}; latest label actor was ${teardownLabelEvent?.actor?.login || '(unknown)'}.`);
                 }
-              } else if (!reason) {
-                reason = 'nightly_cleanup';
+                core.info(`Skipping PR #${pull.number}; sandbox age ${ageHours.toFixed(1)}h is below the TTL and no trusted teardown signal exists.`);
+                continue;
               }
 
               core.info(`Selecting PR #${pull.number} for sandbox janitor destroy: ${reason}.`);

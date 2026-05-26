@@ -706,6 +706,26 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
 
 
 class SandboxPolicyContractTest(unittest.TestCase):
+    def test_policy_refreshes_after_sandbox_auto_apply_completes(self) -> None:
+        workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-policy.yml")
+
+        self.assertIn("workflow_run", workflow["on"])
+        self.assertIn("Sandbox Auto Apply", workflow["on"]["workflow_run"]["workflows"])
+        self.assertIn("completed", workflow["on"]["workflow_run"]["types"])
+        self.assertIn("workflow_run.conclusion == 'success'", workflow["jobs"]["evaluate"]["if"])
+
+        context_script = extract_step(workflow, "evaluate", "Resolve PR context")["with"]["script"]
+        self.assertIn("listPullRequestsAssociatedWithCommit", context_script)
+        self.assertIn("core.setOutput('head_sha'", context_script)
+
+        materialize_script = extract_step(workflow, "evaluate", "Materialize sandbox policy event")["with"][
+            "script"
+        ]
+        self.assertIn(".sandbox-policy-event.json", materialize_script)
+
+        evaluate_step = extract_step(workflow, "evaluate", "Evaluate sandbox blast radius policy")
+        self.assertIn("--event-path .sandbox-policy-event.json", evaluate_step["run"])
+
     def test_trusted_label_resolution_reads_live_pr_labels(self) -> None:
         workflow = load_yaml(REPO_ROOT / ".github/workflows/sandbox-policy.yml")
 
@@ -761,6 +781,8 @@ class SandboxJanitorContractTest(unittest.TestCase):
         self.assertIn("explicit_teardown_label", select_script)
         self.assertIn("draft_pr_with_active_sandbox", select_script)
         self.assertIn("ttl_expired_", select_script)
+        self.assertNotIn("reason = 'nightly_cleanup'", select_script)
+        self.assertIn("no trusted teardown signal exists", select_script)
 
         destroy_job = workflow["jobs"]["destroy-candidates"]
         self.assertEqual(destroy_job["permissions"], {"actions": "write", "contents": "read"})

@@ -78,7 +78,7 @@ Ví dụ:
 - `sandbox-validated` là system state cho PR head hiện tại.
 - `skip-sandbox-approved` là owner waiver, nên hiếm và phải visible trong PR labels/artifacts.
 - Sandbox là môi trường review tạm thời, không phải shared test stack lâu dài.
-- Janitor vẫn cleanup sandbox quá hạn hoặc lệch state.
+- Janitor cleanup sandbox quá hạn, PR đã đóng/draft, hoặc có `teardown-sandbox` trusted. Janitor không được destroy sandbox đang mở chỉ vì schedule nightly.
 
 ## Quy Tắc Escalation
 

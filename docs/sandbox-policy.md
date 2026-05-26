@@ -139,6 +139,25 @@ Sandbox auto-apply chỉ đủ điều kiện khi:
 
 Với PR critical, auto-apply có thể chạy trong khi `Sandbox Policy` vẫn đang fail. Policy chỉ pass sau khi workflow deploy xong và bot refresh `sandbox-validated`.
 
+Nếu `deploy-sandbox` đã được owner gắn trước khi CI xong, `Sandbox Auto Apply` sẽ kiểm tra lại sau các `workflow_run` của CI. Khi toàn bộ gate đã xanh, workflow trusted trên default branch được phép chạy apply/bootstrap, thay vì phụ thuộc vào label do bot gắn lại.
+
+## Refresh Policy Sau Sandbox Validation
+
+`sandbox-validated` là label trạng thái, không phải required check. Vì label này do `github-actions[bot]` gắn bằng `GITHUB_TOKEN`, GitHub có thể không phát sinh workflow run mới cho event `pull_request:labeled`.
+
+Để tránh stale required check, `Sandbox Policy` không chỉ nghe label event. Workflow còn nghe `workflow_run` của `Sandbox Auto Apply`:
+
+```text
+Sandbox Auto Apply success
+→ bot refresh sandbox-validated
+→ Sandbox Policy chạy lại
+→ đọc live PR labels bằng GitHub API
+→ xác nhận sandbox-validated fresh cho đúng head SHA
+→ check evaluate pass
+```
+
+Nhờ vậy merge path không cần admin bypass chỉ vì check cũ fail trước khi sandbox validation hoàn tất.
+
 ## Report
 
 Evaluator ghi file:

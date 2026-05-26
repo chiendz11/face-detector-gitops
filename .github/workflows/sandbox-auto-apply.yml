@@ -362,7 +362,7 @@ jobs:
     needs:
       - evaluate-policy
       - enforce-quota
-    if: github.event_name == 'pull_request_target' && needs.evaluate-policy.outputs.should_apply == 'true' && needs.enforce-quota.result == 'success'
+    if: needs.evaluate-policy.outputs.should_apply == 'true' && needs.enforce-quota.result == 'success'
     permissions:
       contents: read
       id-token: write
@@ -419,7 +419,7 @@ jobs:
     needs:
       - evaluate-policy
       - apply-infrastructure
-    if: github.event_name == 'pull_request_target' && needs.evaluate-policy.outputs.should_apply == 'true' && needs.apply-infrastructure.result == 'success'
+    if: needs.evaluate-policy.outputs.should_apply == 'true' && needs.apply-infrastructure.result == 'success'
     permissions:
       contents: read
       id-token: write
@@ -439,7 +439,7 @@ jobs:
     needs:
       - evaluate-policy
       - bootstrap-sandbox
-    if: github.event_name == 'pull_request_target' && needs.evaluate-policy.outputs.should_apply == 'true' && needs.bootstrap-sandbox.result == 'success'
+    if: needs.evaluate-policy.outputs.should_apply == 'true' && needs.bootstrap-sandbox.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       issues: write

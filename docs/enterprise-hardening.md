@@ -166,7 +166,7 @@ Auto destroy chạy khi:
 - PR chuyển draft
 - deploy label cuối cùng bị gỡ
 - owner gắn `teardown-sandbox`
-- janitor phát hiện sandbox quá hạn hoặc state lệch
+- janitor phát hiện sandbox quá hạn hoặc state lệch; scheduled janitor không được destroy sandbox đang mở khi chưa hết TTL và không có `teardown-sandbox` trusted
 
 Destroy chạy từ trusted workflow trên default branch, không chạy workflow code từ PR branch.
 
