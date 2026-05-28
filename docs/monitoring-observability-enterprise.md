@@ -27,6 +27,8 @@ PR 2: feat/logging-foundation
 -> log labels chuẩn: namespace, app, pod, container, env
 -> dashboard logs theo app
 
+Local development cho PR logging nên chạy bằng Docker Compose trước khi deploy sandbox. Xem hướng dẫn chi tiết ở `docs/local-logging-dev.md`.
+
 PR 3: feat/app-observability
 -> custom metrics cho face verify, enrollment, worker, vector search
 -> Grafana dashboard domain-specific

@@ -1289,6 +1289,49 @@ class HelmChartContractTest(unittest.TestCase):
         self.assertIn("http://localhost:3000", docs)
         self.assertIn("http://localhost:9090/targets", docs)
 
+    def test_local_logging_compose_ships_docker_logs_to_loki(self) -> None:
+        compose = load_yaml(REPO_ROOT / "docker-compose.logging.yml")
+        loki = load_yaml(REPO_ROOT / "logging/local/loki/loki.yml")
+        alloy = (REPO_ROOT / "logging/local/alloy/config.alloy").read_text(encoding="utf-8")
+        datasource = load_yaml(REPO_ROOT / "monitoring/local/grafana/provisioning/datasources/loki.yml")
+        dashboard_path = REPO_ROOT / "monitoring/local/grafana/dashboards/face-detector-local-logs.json"
+        dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+        docs = (REPO_ROOT / "docs/local-logging-dev.md").read_text(encoding="utf-8")
+
+        services = compose["services"]
+        self.assertIn("loki", services)
+        self.assertIn("alloy", services)
+        self.assertIn("${LOKI_PORT:-3100}:3100", services["loki"]["ports"])
+        self.assertIn("${ALLOY_PORT:-12345}:12345", services["alloy"]["ports"])
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock:ro", services["alloy"]["volumes"])
+
+        self.assertFalse(loki["auth_enabled"])
+        self.assertEqual(loki["limits_config"]["retention_period"], "168h")
+
+        self.assertIn('discovery.docker "compose"', alloy)
+        self.assertIn('loki.source.docker "face_detector_compose"', alloy)
+        self.assertIn('loki.write "local"', alloy)
+        for label in ("env", "namespace", "app", "service", "container"):
+            self.assertRegex(alloy, rf'target_label\s+=\s+"{label}"')
+        self.assertIn('url = "http://loki:3100/loki/api/v1/push"', alloy)
+
+        self.assertEqual(datasource["datasources"][0]["uid"], "loki")
+        self.assertEqual(datasource["datasources"][0]["url"], "http://loki:3100")
+        self.assertEqual(dashboard["uid"], "face-detector-local-logs")
+        dashboard_exprs = [
+            target["expr"]
+            for panel in dashboard["panels"]
+            for target in panel.get("targets", [])
+            if "expr" in target
+        ]
+        self.assertTrue(any('env="local"' in expr for expr in dashboard_exprs))
+        self.assertTrue(any('service="backend"' in expr for expr in dashboard_exprs))
+        self.assertTrue(any('service="nginx"' in expr for expr in dashboard_exprs))
+
+        self.assertIn("docker-compose.logging.yml", docs)
+        self.assertIn("http://localhost:3100", docs)
+        self.assertIn("Face Detector Local Logs", docs)
+
 
 class ReusableAppReleaseContractTest(unittest.TestCase):
     def test_reusable_app_release_resolve_step_writes_expected_publish_artifacts(self) -> None:
