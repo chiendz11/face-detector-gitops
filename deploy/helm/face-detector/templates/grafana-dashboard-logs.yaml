@@ -1,0 +1,114 @@
+{{- if .Values.monitoring.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: face-detector-grafana-dashboard-logs
+  labels:
+    app.kubernetes.io/name: face-detector
+    app.kubernetes.io/component: monitoring
+    grafana_dashboard: "1"
+data:
+  face-detector-logs.json: |
+    {
+      "uid": "face-detector-logs",
+      "title": "Face Detector Logs",
+      "tags": ["face-detector", "logs", "{{ .Release.Namespace }}"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "logs",
+          "title": "Application Logs",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {"type": "loki", "uid": "loki"},
+              "expr": "{namespace=\"{{ .Release.Namespace }}\"}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "logs",
+          "title": "Backend Logs",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {"type": "loki", "uid": "loki"},
+              "expr": "{namespace=\"{{ .Release.Namespace }}\", service=\"backend\"}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "logs",
+          "title": "Nginx Boundary Logs",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {"type": "loki", "uid": "loki"},
+              "expr": "{namespace=\"{{ .Release.Namespace }}\", service=\"nginx\"}"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "logs",
+          "title": "Errors And Warnings",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {"type": "loki", "uid": "loki"},
+              "expr": "{namespace=\"{{ .Release.Namespace }}\"} |~ \"(?i)(error|exception|traceback|warning|failed)\""
+            }
+          ]
+        }
+      ]
+    }
+{{- end }}
