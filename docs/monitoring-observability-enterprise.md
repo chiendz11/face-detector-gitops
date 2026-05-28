@@ -18,6 +18,8 @@ PR 1: feat/monitoring-foundation
 -> ArgoCD app/deployment/pod/node alerts
 -> backend /metrics tối thiểu: request count, latency, error count, dependency health
 
+Local development cho PR monitoring nên chạy bằng Docker Compose trước khi deploy sandbox. Xem hướng dẫn chi tiết ở `docs/local-monitoring-dev.md`.
+
 PR 2: feat/logging-foundation
 -> Loki
 -> Grafana Alloy hoặc OpenTelemetry Collector

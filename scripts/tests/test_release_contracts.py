@@ -1248,6 +1248,47 @@ class HelmChartContractTest(unittest.TestCase):
         self.assertIn("Face Detector Overview", dashboard)
         self.assertIn("face_detector_dependency_health_status", dashboard)
 
+    def test_local_monitoring_compose_scrapes_backend_metrics(self) -> None:
+        compose = load_yaml(REPO_ROOT / "docker-compose.monitoring.yml")
+        prometheus = load_yaml(REPO_ROOT / "monitoring/local/prometheus/prometheus.yml")
+        local_rules = load_yaml(REPO_ROOT / "monitoring/local/prometheus/rules/face-detector-local.yml")
+        datasource = load_yaml(REPO_ROOT / "monitoring/local/grafana/provisioning/datasources/prometheus.yml")
+        dashboard_path = REPO_ROOT / "monitoring/local/grafana/dashboards/face-detector-local-overview.json"
+        dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+        docs = (REPO_ROOT / "docs/local-monitoring-dev.md").read_text(encoding="utf-8")
+
+        services = compose["services"]
+        for service_name in ("prometheus", "grafana", "alertmanager"):
+            self.assertIn(service_name, services)
+        self.assertIn("${BACKEND_METRICS_PORT:-8000}:8000", services["backend"]["ports"])
+
+        scrape_configs = prometheus["scrape_configs"]
+        backend_scrape = next(config for config in scrape_configs if config["job_name"] == "face-detector-backend")
+        static_config = backend_scrape["static_configs"][0]
+        self.assertEqual(static_config["targets"], ["backend:8000"])
+        self.assertEqual(static_config["labels"]["namespace"], "local")
+        self.assertEqual(static_config["labels"]["service"], "backend")
+
+        self.assertEqual(prometheus["rule_files"], ["/etc/prometheus/rules/*.yml"])
+        alert_names = {rule["alert"] for group in local_rules["groups"] for rule in group["rules"]}
+        self.assertIn("LocalFaceDetectorBackendDown", alert_names)
+        self.assertIn("LocalFaceDetectorDependencyUnhealthy", alert_names)
+
+        self.assertEqual(datasource["datasources"][0]["uid"], "prometheus")
+        self.assertEqual(dashboard["uid"], "face-detector-local-overview")
+        dashboard_exprs = [
+            target["expr"]
+            for panel in dashboard["panels"]
+            for target in panel.get("targets", [])
+            if "expr" in target
+        ]
+        self.assertTrue(any('namespace="local"' in expr for expr in dashboard_exprs))
+        self.assertTrue(any('service="backend"' in expr for expr in dashboard_exprs))
+
+        self.assertIn("docker-compose.monitoring.yml", docs)
+        self.assertIn("http://localhost:3000", docs)
+        self.assertIn("http://localhost:9090/targets", docs)
+
 
 class ReusableAppReleaseContractTest(unittest.TestCase):
     def test_reusable_app_release_resolve_step_writes_expected_publish_artifacts(self) -> None:
