@@ -568,7 +568,7 @@ jobs:
 
       - name: Mark sandbox as active
         if: success() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
         with:
@@ -626,7 +626,7 @@ jobs:
 
       - name: Publish sandbox apply PR comment
         if: success() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           COMMENT_FILE: ${{ runner.temp }}/sandbox-status-comment.md
           PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
@@ -1139,7 +1139,7 @@ jobs:
 
       - name: Mark sandbox as inactive
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
         with:
@@ -1204,7 +1204,7 @@ jobs:
 
       - name: Publish sandbox destroy PR comment
         if: success() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           COMMENT_FILE: ${{ runner.temp }}/sandbox-status-comment.md
           PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
