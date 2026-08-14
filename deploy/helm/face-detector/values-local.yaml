@@ -1,0 +1,93 @@
+# Local Kubernetes values for kind/minikube.
+# Load these images into the local cluster before installing the chart.
+envSecretName: face-detector-env
+imagePullSecrets: []
+
+publicDns:
+  enabled: false
+  hostname: ""
+
+publicTls:
+  enabled: false
+  certificateArn: ""
+
+monitoring:
+  enabled: false
+  serviceMonitor:
+    enabled: false
+  prometheusRule:
+    enabled: false
+  alertmanagerConfig:
+    enabled: false
+
+backend:
+  replicaCount: 1
+  image:
+    repository: face_detector-backend
+    tag: latest
+    digest: ""
+    requireDigest: false
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  autoscaling:
+    enabled: false
+
+migrationJob:
+  enabled: true
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 300
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: face_detector-backend
+    tag: latest
+    digest: ""
+    requireDigest: false
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  autoscaling:
+    keda:
+      enabled: false
+
+frontendAdmin:
+  replicaCount: 1
+  image:
+    repository: face_detector-frontend-admin
+    tag: latest
+    digest: ""
+    requireDigest: false
+    pullPolicy: IfNotPresent
+
+nginx:
+  replicaCount: 1
+  image:
+    repository: face_detector-nginx
+    tag: latest
+    digest: ""
+    requireDigest: false
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-scheme: null

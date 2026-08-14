@@ -42,6 +42,10 @@ def load_yaml(path: Path) -> dict[str, Any]:
     return document
 
 
+def read_text(*relative_paths: str) -> str:
+    return "\n".join((REPO_ROOT / path).read_text(encoding="utf-8") for path in relative_paths)
+
+
 def extract_run_step(document: dict[str, Any], job_name: str, step_name: str) -> str:
     steps = document["jobs"][job_name]["steps"]
     for step in steps:
@@ -629,29 +633,29 @@ class AppCdSandboxBootstrapContractTest(unittest.TestCase):
         self.assertEqual(application_step["env"]["ARGOCD_REPO_URL"], "${{ steps.argocd-repo.outputs.repo_url }}")
 
     def test_argocd_control_plane_is_internal_rbac_logged_and_notifies(self) -> None:
-        eks_main = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
-        eks_variables = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
+        platform_main = read_text("terraform/platform/argocd.tf", "terraform/platform/locals.tf")
+        platform_variables = read_text("terraform/platform/variables.tf")
 
-        self.assertIn('type = "ClusterIP"', eks_main)
-        self.assertIn('"server.insecure" = false', eks_main)
-        self.assertIn('"server.disable.auth"', eks_main)
-        self.assertIn('"exec.enabled"', eks_main)
-        self.assertIn('"server.rbac.log.enforce.enable" = true', eks_main)
-        self.assertIn('format = "json"', eks_main)
-        self.assertIn('"policy.default" = "role:face-detector-readonly"', eks_main)
-        self.assertIn("role:face-detector-admin", eks_main)
-        self.assertIn("argocd_oidc_config", eks_main)
-        self.assertIn('"oidc.config" = var.argocd_oidc_config', eks_main)
-        self.assertIn("notifications = {", eks_main)
-        self.assertIn("enabled       = true", eks_main)
-        self.assertIn("argocd_notifications_recipients", eks_main)
-        self.assertIn("trigger.on-sync-failed", eks_main)
-        self.assertIn("trigger.on-health-degraded", eks_main)
-        self.assertIn("serviceMonitor = {", eks_main)
+        self.assertIn('type = "ClusterIP"', platform_main)
+        self.assertIn('"server.insecure" = false', platform_main)
+        self.assertIn('"server.disable.auth"', platform_main)
+        self.assertIn('"exec.enabled"', platform_main)
+        self.assertIn('"server.rbac.log.enforce.enable" = true', platform_main)
+        self.assertIn('format = "json"', platform_main)
+        self.assertIn('"policy.default" = "role:face-detector-readonly"', platform_main)
+        self.assertIn("role:face-detector-admin", platform_main)
+        self.assertIn("argocd_oidc_config", platform_main)
+        self.assertIn('"oidc.config" = var.argocd_oidc_config', platform_main)
+        self.assertIn("notifications = {", platform_main)
+        self.assertIn("enabled       = true", platform_main)
+        self.assertIn("argocd_notifications_recipients", platform_main)
+        self.assertIn("trigger.on-sync-failed", platform_main)
+        self.assertIn("trigger.on-health-degraded", platform_main)
+        self.assertIn("serviceMonitor = {", platform_main)
 
-        self.assertIn('variable "argocd_oidc_config"', eks_variables)
-        self.assertIn('variable "argocd_admin_rbac_subjects"', eks_variables)
-        self.assertIn('variable "argocd_notifications_recipients"', eks_variables)
+        self.assertIn('variable "argocd_oidc_config"', platform_variables)
+        self.assertIn('variable "argocd_admin_rbac_subjects"', platform_variables)
+        self.assertIn('variable "argocd_notifications_recipients"', platform_variables)
 
         for workflow_path in (
             ".github/workflows/infrastructure.yml",
@@ -929,9 +933,9 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn("FACE_DETECTOR_BASE_DOMAIN", workflow_text)
         self.assertIn("TF_VAR_manage_public_dns_zone", workflow_text)
 
-    def test_eks_grants_access_to_task_scoped_sandbox_roles(self) -> None:
-        main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
-        variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
+    def test_cluster_grants_access_to_task_scoped_sandbox_roles(self) -> None:
+        main_tf = read_text("terraform/cluster/main.tf")
+        variables_tf = read_text("terraform/cluster/variables.tf")
 
         self.assertIn("sandbox_cluster_access_entries", main_tf)
         self.assertIn("access_entries", main_tf)
@@ -944,10 +948,15 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn('variable "sandbox_appdeploy_role_arn"', variables_tf)
         self.assertIn('variable "sandbox_destroy_role_arn"', variables_tf)
 
-    def test_eks_installs_external_dns_for_cloudflare_and_optional_route53(self) -> None:
-        main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
-        variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
-        outputs_tf = (REPO_ROOT / "terraform/eks/outputs.tf").read_text(encoding="utf-8")
+    def test_platform_installs_external_dns_for_cloudflare_and_optional_route53(self) -> None:
+        main_tf = read_text(
+            "terraform/platform/dns.tf",
+            "terraform/platform/iam.tf",
+            "terraform/platform/addons.tf",
+            "terraform/platform/locals.tf",
+        )
+        variables_tf = read_text("terraform/platform/variables.tf")
+        outputs_tf = read_text("terraform/platform/outputs.tf")
         infrastructure_workflow = (REPO_ROOT / ".github/workflows/infrastructure.yml").read_text(encoding="utf-8")
         plan_workflow = (REPO_ROOT / ".github/workflows/terraform-plan-reusable.yml").read_text(encoding="utf-8")
 
@@ -993,10 +1002,13 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn("TF_VAR_public_dns_provider", plan_workflow)
         self.assertIn("TF_VAR_cloudflare_zone_id", plan_workflow)
 
-    def test_eks_installs_internal_monitoring_stack(self) -> None:
-        main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
-        variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
-        outputs_tf = (REPO_ROOT / "terraform/eks/outputs.tf").read_text(encoding="utf-8")
+    def test_platform_installs_internal_monitoring_stack(self) -> None:
+        main_tf = read_text(
+            "terraform/platform/monitoring.tf",
+            "terraform/platform/namespaces.tf",
+        )
+        variables_tf = read_text("terraform/platform/variables.tf")
+        outputs_tf = read_text("terraform/platform/outputs.tf")
         infrastructure_workflow = (REPO_ROOT / ".github/workflows/infrastructure.yml").read_text(encoding="utf-8")
         logging_docs = (REPO_ROOT / "docs/logging-foundation-enterprise.md").read_text(encoding="utf-8")
 
@@ -1051,27 +1063,30 @@ class GitHubOidcTrustContractTest(unittest.TestCase):
         self.assertIn("monitoring_namespace", outputs_tf)
         self.assertIn("logging_enabled", outputs_tf)
         self.assertIn("loki_gateway_url", outputs_tf)
-        self.assertIn("helm_release.kube_prometheus_stack[0]|kube-prometheus-stack|monitoring", infrastructure_workflow)
+        self.assertIn("PLATFORM_STATE_KEY", infrastructure_workflow)
+        self.assertIn("scripts/run_split_terraform_stack.sh apply", infrastructure_workflow)
         self.assertIn("Grafana Alloy", logging_docs)
         self.assertIn("Loki", logging_docs)
         self.assertIn("Face Detector Logs", logging_docs)
         self.assertIn("kubectl -n monitoring port-forward svc/loki-gateway 3100:80", logging_docs)
 
-    def test_eks_grants_least_privilege_monitoring_port_forward_access(self) -> None:
-        main_tf = (REPO_ROOT / "terraform/eks/main.tf").read_text(encoding="utf-8")
-        variables_tf = (REPO_ROOT / "terraform/eks/variables.tf").read_text(encoding="utf-8")
+    def test_platform_grants_least_privilege_monitoring_port_forward_access(self) -> None:
+        main_tf = read_text("terraform/platform/rbac.tf", "terraform/platform/locals.tf")
+        cluster_tf = read_text("terraform/cluster/main.tf", "terraform/cluster/outputs.tf")
+        variables_tf = read_text("terraform/platform/variables.tf")
         infrastructure_workflow = (REPO_ROOT / ".github/workflows/infrastructure.yml").read_text(encoding="utf-8")
         plan_workflow = (REPO_ROOT / ".github/workflows/terraform-plan-reusable.yml").read_text(encoding="utf-8")
         monitoring_docs = (REPO_ROOT / "docs/monitoring-observability-enterprise.md").read_text(encoding="utf-8")
 
         self.assertIn('variable "monitoring_port_forward_principal_arns"', variables_tf)
-        self.assertIn("monitoring-port-forwarders", main_tf)
+        self.assertIn("monitoring-port-forwarders", cluster_tf)
+        self.assertIn("data.terraform_remote_state.cluster.outputs.monitoring_port_forward_group", main_tf)
         self.assertIn('resource "kubernetes_role" "monitoring_port_forward"', main_tf)
         self.assertIn('resource "kubernetes_role_binding" "monitoring_port_forward"', main_tf)
         self.assertIn("pods/portforward", main_tf)
         self.assertIn("endpointslices", main_tf)
         self.assertIn("kube-prometheus-stack-grafana", main_tf)
-        self.assertIn("kubernetes_groups = [local.monitoring_port_forward_group]", main_tf)
+        self.assertIn("kubernetes_groups = [local.monitoring_port_forward_group]", cluster_tf)
         self.assertIn("MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON", infrastructure_workflow)
         self.assertIn("TF_VAR_monitoring_port_forward_principal_arns", infrastructure_workflow)
         self.assertIn("TF_VAR_monitoring_port_forward_principal_arns", plan_workflow)

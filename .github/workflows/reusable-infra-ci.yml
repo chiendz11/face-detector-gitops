@@ -38,12 +38,36 @@ jobs:
         working-directory: terraform/bootstrap
         run: terraform validate
 
-      - name: Terraform init for EKS
-        working-directory: terraform/eks
+      - name: Terraform init for network
+        working-directory: terraform/network
         run: terraform init -backend=false -input=false
 
-      - name: Terraform validate for EKS
-        working-directory: terraform/eks
+      - name: Terraform validate for network
+        working-directory: terraform/network
+        run: terraform validate
+
+      - name: Terraform init for cluster
+        working-directory: terraform/cluster
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate for cluster
+        working-directory: terraform/cluster
+        run: terraform validate
+
+      - name: Terraform init for data
+        working-directory: terraform/data
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate for data
+        working-directory: terraform/data
+        run: terraform validate
+
+      - name: Terraform init for platform
+        working-directory: terraform/platform
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate for platform
+        working-directory: terraform/platform
         run: terraform validate
 
       - name: Set up Helm

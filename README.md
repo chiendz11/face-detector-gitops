@@ -217,10 +217,13 @@ EKS environment có thể disposable, nhưng data store vẫn external và có b
 ## 12. Terraform Layout
 
 - `terraform/bootstrap`: bootstrap remote state, lock table, IAM roles và OIDC trust. Route53 hosted zone/cert/DNSSEC/query logs chỉ là nhánh optional, không cần dùng nếu DNS nằm ở Cloudflare.
-- `terraform/eks`: VPC, EKS, RDS, Redis, S3 snapshot bucket, namespaces, ArgoCD, metrics-server, KEDA, cluster-autoscaler, ExternalDNS.
+- `terraform/network`: VPC, subnets, routing và network outputs dùng chung.
+- `terraform/cluster`: EKS control plane, managed node group và cluster access entries.
+- `terraform/data`: RDS/Postgres, Redis/ElastiCache, S3 snapshot bucket và data-service outputs.
+- `terraform/platform`: Kubernetes namespaces, ArgoCD, metrics-server, KEDA, cluster-autoscaler, ExternalDNS, monitoring và logging.
 - `terraform/ssm`: sync backend runtime env vào `/facedetector/<environment>/...`.
 
-`terraform/eks` và `terraform/ssm` dùng S3 remote backend. Hãy tạo backend bucket và lock table một lần bằng `terraform/bootstrap`, rồi cấu hình `TF_STATE_BUCKET` và `TF_STATE_LOCK_TABLE`.
+Các root runtime (`network`, `cluster`, `data`, `platform`, `ssm`) dùng S3 remote backend. Hãy tạo backend bucket và lock table một lần bằng `terraform/bootstrap`, rồi cấu hình `TF_STATE_BUCKET` và `TF_STATE_LOCK_TABLE`.
 
 ## 13. Luồng GitHub Actions
 

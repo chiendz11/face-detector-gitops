@@ -89,7 +89,7 @@ Kỳ vọng:
 ```text
 loki      Up
 alloy     Up
-grafana   Up
+grafana   Up2
 backend   Up
 nginx     Up
 ```

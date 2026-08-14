@@ -94,6 +94,6 @@ Chạy bootstrap khi thay đổi các thành phần nền móng như:
 - Terraform state backend.
 - Route53 hosted zone, ACM certificate, DNSSEC hoặc DNS query logging nếu đang dùng nhánh Route53 optional.
 
-Với hướng hiện tại `FACE_DETECTOR_DNS_PROVIDER=cloudflare`, việc add domain vào Cloudflare, đổi nameserver và tạo Cloudflare API token không cần `terraform/bootstrap apply`. Bạn chỉ cần set GitHub variables/secrets rồi để `terraform/eks` cài ExternalDNS provider Cloudflare.
+Với hướng hiện tại `FACE_DETECTOR_DNS_PROVIDER=cloudflare`, việc add domain vào Cloudflare, đổi nameserver và tạo Cloudflare API token không cần `terraform/bootstrap apply`. Bạn chỉ cần set GitHub variables/secrets rồi để `terraform/platform` cài ExternalDNS provider Cloudflare.
 
 Không cần chạy bootstrap cho thay đổi app code thông thường.

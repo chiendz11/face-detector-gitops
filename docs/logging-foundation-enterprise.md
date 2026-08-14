@@ -48,7 +48,7 @@ Pod stdout/stderr
 -> Dashboard Face Detector Logs hiển thị logs theo app/service/env
 ```
 
-Loki và Alloy được cài bằng Terraform trong `terraform/eks`.
+Loki và Alloy được cài bằng Terraform trong `terraform/platform`.
 
 Namespace dùng chung với monitoring:
 

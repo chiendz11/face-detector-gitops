@@ -382,86 +382,23 @@ jobs:
         with:
           terraform_version: "1.6.6"
 
-      - name: Terraform init
-        working-directory: terraform/eks
-        env:
-          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-          TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
-          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
-          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
-          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
-          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
-          TF_VAR_snapshot_bucket_name: ${{ steps.context.outputs.snapshot_bucket_name }}
-          TF_VAR_node_instance_type: ${{ steps.context.outputs.node_instance_type }}
-          TF_VAR_node_min_size: ${{ steps.context.outputs.node_min_size }}
-          TF_VAR_node_max_size: ${{ steps.context.outputs.node_max_size }}
-          TF_VAR_node_desired_size: ${{ steps.context.outputs.node_desired_size }}
-          TF_VAR_db_name: ${{ steps.runtime-contract.outputs.db_name }}
-          TF_VAR_db_username: ${{ steps.runtime-contract.outputs.db_username }}
-          TF_VAR_db_password: ${{ steps.runtime-contract.outputs.db_password }}
-          TF_VAR_redis_auth_token: ${{ steps.runtime-contract.outputs.redis_auth_token }}
-          TF_VAR_sandbox_plan_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_PLAN_ARN || vars.AWS_ROLE_SANDBOX_PLAN_ARN || '' }}
-          TF_VAR_sandbox_appdeploy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || vars.AWS_ROLE_SANDBOX_APPDEPLOY_ARN || '' }}
-          TF_VAR_sandbox_destroy_role_arn: ${{ secrets.AWS_ROLE_SANDBOX_DESTROY_ARN || vars.AWS_ROLE_SANDBOX_DESTROY_ARN || '' }}
-          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
-          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
-          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
-          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
-          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
-          TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
-          TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
-          TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
-          TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
-        run: |
-          terraform init -input=false \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
-            -backend-config="key=${{ steps.context.outputs.terraform_state_key }}" \
-            -backend-config="region=${TF_STATE_REGION}"
-
-      - name: Recover orphaned sandbox Helm releases
-        if: inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox'
-        working-directory: terraform/eks
-        env:
-          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
-        run: |
-          if ! aws eks describe-cluster --region "$TF_VAR_aws_region" --name "$TF_VAR_cluster_name" >/dev/null 2>&1; then
-            echo "Cluster $TF_VAR_cluster_name does not exist yet. Skipping orphaned Helm release cleanup."
-            exit 0
-          fi
-
-          if ! command -v helm >/dev/null 2>&1; then
-            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          fi
-
-          terraform state list > "$RUNNER_TEMP/terraform-state.txt"
-          aws eks update-kubeconfig --region "$TF_VAR_aws_region" --name "$TF_VAR_cluster_name" --alias "$TF_VAR_cluster_name"
-
-          while IFS='|' read -r state_address release_name release_namespace; do
-            if grep -Fxq "$state_address" "$RUNNER_TEMP/terraform-state.txt"; then
-              continue
-            fi
-
-            if helm status "$release_name" -n "$release_namespace" >/dev/null 2>&1; then
-              echo "Uninstalling orphaned Helm release $release_name in namespace $release_namespace before Terraform apply."
-              helm uninstall "$release_name" -n "$release_namespace"
-            fi
-          done <<'EOF'
-          helm_release.argocd|argocd|argocd
-          helm_release.metrics_server|metrics-server|kube-system
-          helm_release.keda[0]|keda|keda
-          helm_release.kube_prometheus_stack[0]|kube-prometheus-stack|monitoring
-          helm_release.cluster_autoscaler[0]|cluster-autoscaler|kube-system
-          EOF
-
-      - name: Terraform apply
+      - name: Terraform apply split infrastructure
         if: inputs.action == 'apply'
-        working-directory: terraform/eks
         env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_STATE_LOCK_TABLE: ${{ secrets.TF_STATE_LOCK_TABLE }}
+          TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          NETWORK_STATE_KEY: ${{ steps.context.outputs.network_state_key }}
+          CLUSTER_STATE_KEY: ${{ steps.context.outputs.cluster_state_key }}
+          DATA_STATE_KEY: ${{ steps.context.outputs.data_state_key }}
+          PLATFORM_STATE_KEY: ${{ steps.context.outputs.platform_state_key }}
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
           TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
           TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_terraform_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
+          TF_VAR_terraform_state_region: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_network_state_key: ${{ steps.context.outputs.network_state_key }}
+          TF_VAR_cluster_state_key: ${{ steps.context.outputs.cluster_state_key }}
           TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
           TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
           TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
@@ -486,17 +423,35 @@ jobs:
           TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
           TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
           TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
-        run: terraform apply -auto-approve -input=false
+        run: scripts/run_split_terraform_stack.sh apply
 
       - name: Configure Cloudflare ExternalDNS token
         if: inputs.action == 'apply'
-        working-directory: terraform/eks
+        working-directory: terraform/platform
         env:
           AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
           CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
           DNS_PROVIDER: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
           PUBLIC_DNS_ENABLED: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || '' }}
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_terraform_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
+          TF_VAR_terraform_state_region: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_cluster_state_key: ${{ steps.context.outputs.cluster_state_key }}
+          TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
+          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
+          TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
+          TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
+          TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
+          TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
         run: |
           set -euo pipefail
 
@@ -518,8 +473,14 @@ jobs:
             exit 1
           fi
 
-          terraform output -json > "$RUNNER_TEMP/eks-outputs.json"
-          read -r namespace secret_name < <(python3 - "$RUNNER_TEMP/eks-outputs.json" <<'PY'
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=${{ steps.context.outputs.platform_state_key }}" \
+            -backend-config="region=${TF_STATE_REGION}"
+
+          terraform output -json > "$RUNNER_TEMP/platform-outputs.json"
+          read -r namespace secret_name < <(python3 - "$RUNNER_TEMP/platform-outputs.json" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -576,10 +537,34 @@ jobs:
           echo "===== kubectl describe pods -n argocd ====="
           kubectl describe pods -n argocd || true
 
-      - name: Show infrastructure outputs
+      - name: Show split infrastructure outputs
         if: inputs.action == 'apply'
-        working-directory: terraform/eks
-        run: terraform output
+        env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_STATE_LOCK_TABLE: ${{ secrets.TF_STATE_LOCK_TABLE }}
+          TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          NETWORK_STATE_KEY: ${{ steps.context.outputs.network_state_key }}
+          CLUSTER_STATE_KEY: ${{ steps.context.outputs.cluster_state_key }}
+          DATA_STATE_KEY: ${{ steps.context.outputs.data_state_key }}
+          PLATFORM_STATE_KEY: ${{ steps.context.outputs.platform_state_key }}
+        run: |
+          set -euo pipefail
+
+          while IFS='|' read -r root key; do
+            echo "::group::Terraform outputs $root"
+            terraform -chdir="$root" init -input=false \
+              -backend-config="bucket=${TF_STATE_BUCKET}" \
+              -backend-config="dynamodb_table=${TF_STATE_LOCK_TABLE}" \
+              -backend-config="key=${key}" \
+              -backend-config="region=${TF_STATE_REGION}" >/dev/null
+            terraform -chdir="$root" output || true
+            echo "::endgroup::"
+          done <<EOF
+          terraform/network|${NETWORK_STATE_KEY}
+          terraform/cluster|${CLUSTER_STATE_KEY}
+          terraform/data|${DATA_STATE_KEY}
+          terraform/platform|${PLATFORM_STATE_KEY}
+          EOF
 
       - name: Mark sandbox as active
         if: success() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
@@ -597,19 +582,26 @@ jobs:
 
       - name: Build sandbox apply PR comment
         if: success() && inputs.action == 'apply' && steps.context.outputs.deployment_environment == 'sandbox' && steps.context.outputs.pull_request_number != ''
-        working-directory: terraform/eks
+        working-directory: terraform/cluster
         env:
+          TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
           PR_NUMBER: ${{ steps.context.outputs.pull_request_number }}
           SANDBOX_KEY: ${{ steps.context.outputs.sandbox_key }}
           CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
-          TERRAFORM_STATE_KEY: ${{ steps.context.outputs.terraform_state_key }}
+          TERRAFORM_STATE_KEY: network=${{ steps.context.outputs.network_state_key }}, cluster=${{ steps.context.outputs.cluster_state_key }}, data=${{ steps.context.outputs.data_state_key }}, platform=${{ steps.context.outputs.platform_state_key }}
           SSM_STATE_KEY: ${{ steps.context.outputs.ssm_state_key }}
           SNAPSHOT_BUCKET_NAME: ${{ steps.context.outputs.snapshot_bucket_name }}
           ENV_VERSION: ${{ steps.context.outputs.env_version }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          terraform output -json > "$RUNNER_TEMP/eks-outputs.json"
-          CLUSTER_ENDPOINT=$(python3 - "$RUNNER_TEMP/eks-outputs.json" <<'PY'
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=${{ steps.context.outputs.cluster_state_key }}" \
+            -backend-config="region=${TF_STATE_REGION}"
+
+          terraform output -json > "$RUNNER_TEMP/cluster-outputs.json"
+          CLUSTER_ENDPOINT=$(python3 - "$RUNNER_TEMP/cluster-outputs.json" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -768,23 +760,59 @@ jobs:
 
       - name: Remove pre-deleted sandbox app namespace from terraform state
         if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
-        working-directory: terraform/eks
+        working-directory: terraform/platform
+        env:
+          TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_terraform_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
+          TF_VAR_terraform_state_region: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_cluster_state_key: ${{ steps.context.outputs.cluster_state_key }}
+          TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
+          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
+          TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
+          TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
+          TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
+          TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
         run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=${{ steps.context.outputs.platform_state_key }}" \
+            -backend-config="region=${TF_STATE_REGION}"
+
           if terraform state list | grep -Fxq 'kubernetes_namespace.application'; then
             terraform state rm kubernetes_namespace.application
           else
             echo "kubernetes_namespace.application is already absent from terraform state."
           fi
 
-      - name: Terraform destroy
+      - name: Terraform destroy split infrastructure
         id: terraform_destroy_initial
         if: inputs.action == 'destroy'
         continue-on-error: true
-        working-directory: terraform/eks
         env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_STATE_LOCK_TABLE: ${{ secrets.TF_STATE_LOCK_TABLE }}
+          TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          NETWORK_STATE_KEY: ${{ steps.context.outputs.network_state_key }}
+          CLUSTER_STATE_KEY: ${{ steps.context.outputs.cluster_state_key }}
+          DATA_STATE_KEY: ${{ steps.context.outputs.data_state_key }}
+          PLATFORM_STATE_KEY: ${{ steps.context.outputs.platform_state_key }}
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
           TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
           TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_terraform_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
+          TF_VAR_terraform_state_region: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_network_state_key: ${{ steps.context.outputs.network_state_key }}
+          TF_VAR_cluster_state_key: ${{ steps.context.outputs.cluster_state_key }}
           TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
           TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
           TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
@@ -809,7 +837,7 @@ jobs:
           TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
           TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
           TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
-        run: terraform destroy -auto-approve -input=false
+        run: scripts/run_split_terraform_stack.sh destroy
 
       - name: Cleanup sandbox AWS orphans after destroy
         if: always() && inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox'
@@ -826,11 +854,21 @@ jobs:
       - name: Retry Terraform destroy after orphan cleanup
         id: terraform_destroy_retry
         if: inputs.action == 'destroy' && steps.context.outputs.deployment_environment == 'sandbox' && steps.terraform_destroy_initial.outcome == 'failure'
-        working-directory: terraform/eks
         env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_STATE_LOCK_TABLE: ${{ secrets.TF_STATE_LOCK_TABLE }}
+          TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          NETWORK_STATE_KEY: ${{ steps.context.outputs.network_state_key }}
+          CLUSTER_STATE_KEY: ${{ steps.context.outputs.cluster_state_key }}
+          DATA_STATE_KEY: ${{ steps.context.outputs.data_state_key }}
+          PLATFORM_STATE_KEY: ${{ steps.context.outputs.platform_state_key }}
           TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
           TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
           TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_terraform_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
+          TF_VAR_terraform_state_region: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_network_state_key: ${{ steps.context.outputs.network_state_key }}
+          TF_VAR_cluster_state_key: ${{ steps.context.outputs.cluster_state_key }}
           TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
           TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
           TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
@@ -855,7 +893,7 @@ jobs:
           TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
           TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
           TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
-        run: terraform destroy -auto-approve -input=false
+        run: scripts/run_split_terraform_stack.sh destroy
 
       - name: Fail if Terraform destroy did not complete
         if: |
@@ -890,7 +928,10 @@ jobs:
           TF_STATE_REGION: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
           TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
           TF_STATE_LOCK_TABLE: ${{ secrets.TF_STATE_LOCK_TABLE }}
-          TERRAFORM_STATE_KEY: ${{ steps.context.outputs.terraform_state_key }}
+          NETWORK_STATE_KEY: ${{ steps.context.outputs.network_state_key }}
+          CLUSTER_STATE_KEY: ${{ steps.context.outputs.cluster_state_key }}
+          DATA_STATE_KEY: ${{ steps.context.outputs.data_state_key }}
+          PLATFORM_STATE_KEY: ${{ steps.context.outputs.platform_state_key }}
           SSM_STATE_KEY: ${{ steps.context.outputs.ssm_state_key }}
           CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
           ENVIRONMENT_IDENTITY: ${{ steps.context.outputs.environment_identity }}
@@ -899,20 +940,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          pushd terraform/eks >/dev/null
-          terraform init -input=false \
-            -backend-config="bucket=${TF_STATE_BUCKET}" \
-            -backend-config="dynamodb_table=${TF_STATE_LOCK_TABLE}" \
-            -backend-config="key=${TERRAFORM_STATE_KEY}" \
-            -backend-config="region=${TF_STATE_REGION}" >/dev/null
-          PRIMARY_STATE=$(terraform state list)
-          popd >/dev/null
+          while IFS='|' read -r root key label; do
+            pushd "$root" >/dev/null
+            terraform init -input=false \
+              -backend-config="bucket=${TF_STATE_BUCKET}" \
+              -backend-config="dynamodb_table=${TF_STATE_LOCK_TABLE}" \
+              -backend-config="key=${key}" \
+              -backend-config="region=${TF_STATE_REGION}" >/dev/null
+            STATE_CONTENT=$(terraform state list)
+            popd >/dev/null
 
-          if [ -n "$PRIMARY_STATE" ]; then
-            echo "Primary sandbox terraform state is not empty after destroy:" >&2
-            echo "$PRIMARY_STATE" >&2
-            exit 1
-          fi
+            if [ -n "$STATE_CONTENT" ]; then
+              echo "Sandbox ${label} terraform state is not empty after destroy:" >&2
+              echo "$STATE_CONTENT" >&2
+              exit 1
+            fi
+          done <<EOF
+          terraform/network|${NETWORK_STATE_KEY}|network
+          terraform/cluster|${CLUSTER_STATE_KEY}|cluster
+          terraform/data|${DATA_STATE_KEY}|data
+          terraform/platform|${PLATFORM_STATE_KEY}|platform
+          EOF
 
           pushd terraform/ssm >/dev/null
           terraform init -input=false \
@@ -1139,7 +1187,7 @@ jobs:
           SANDBOX_KEY: ${{ steps.context.outputs.sandbox_key }}
           CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
           ENV_VERSION: ${{ steps.context.outputs.env_version }}
-          TERRAFORM_STATE_KEY: ${{ steps.context.outputs.terraform_state_key }}
+          TERRAFORM_STATE_KEY: network=${{ steps.context.outputs.network_state_key }}, cluster=${{ steps.context.outputs.cluster_state_key }}, data=${{ steps.context.outputs.data_state_key }}, platform=${{ steps.context.outputs.platform_state_key }}
           SSM_STATE_KEY: ${{ steps.context.outputs.ssm_state_key }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |

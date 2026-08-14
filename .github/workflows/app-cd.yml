@@ -430,10 +430,15 @@ jobs:
 
       - name: Inject managed infrastructure endpoints into backend runtime env file
         if: steps.cluster.outputs.exists == 'true'
-        working-directory: terraform/eks
+        working-directory: terraform/data
         env:
           CLUSTER_NAME: ${{ steps.context.outputs.cluster_name }}
           ENVIRONMENT: ${{ steps.context.outputs.deployment_environment }}
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_terraform_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
+          TF_VAR_terraform_state_region: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_network_state_key: ${{ steps.context.outputs.network_state_key }}
+          TF_VAR_cluster_state_key: ${{ steps.context.outputs.cluster_state_key }}
           TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
           TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
           TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
@@ -454,12 +459,12 @@ jobs:
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
-            -backend-config="key=${{ steps.context.outputs.terraform_state_key }}" \
+            -backend-config="key=${{ steps.context.outputs.data_state_key }}" \
             -backend-config="region=${TF_STATE_REGION}"
 
-          terraform output -json > "$RUNNER_TEMP/eks-outputs.json"
+          terraform output -json > "$RUNNER_TEMP/data-outputs.json"
 
-          python3 - "$ENV_FILE_PATH" "$RUNNER_TEMP/eks-outputs.json" <<'PY'
+          python3 - "$ENV_FILE_PATH" "$RUNNER_TEMP/data-outputs.json" <<'PY'
           import json
           import os
           import sys
@@ -704,6 +709,37 @@ jobs:
             --from-env-file=.env.runtime \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Read platform infrastructure outputs
+        if: steps.cluster.outputs.exists == 'true'
+        working-directory: terraform/platform
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_terraform_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
+          TF_VAR_terraform_state_region: ${{ secrets.TF_STATE_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+          TF_VAR_cluster_state_key: ${{ steps.context.outputs.cluster_state_key }}
+          TF_VAR_deployment_environment: ${{ steps.context.outputs.deployment_environment }}
+          TF_VAR_cluster_name: ${{ steps.context.outputs.cluster_name }}
+          TF_VAR_environment_identity: ${{ steps.context.outputs.environment_identity }}
+          TF_VAR_env_version: ${{ steps.context.outputs.env_version }}
+          TF_VAR_resource_owner: ${{ steps.context.outputs.owner_login }}
+          TF_VAR_public_dns_enabled: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
+          TF_VAR_public_dns_provider: ${{ env.FACE_DETECTOR_DNS_PROVIDER }}
+          TF_VAR_public_dns_base_domain: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
+          TF_VAR_cloudflare_zone_id: ${{ env.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_public_tls_enabled: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
+          TF_VAR_argocd_oidc_config: ${{ secrets.ARGOCD_OIDC_CONFIG || '' }}
+          TF_VAR_argocd_admin_rbac_subjects: ${{ vars.ARGOCD_ADMIN_RBAC_SUBJECTS || '[]' }}
+          TF_VAR_argocd_notifications_recipients: ${{ vars.ARGOCD_NOTIFICATIONS_RECIPIENTS || '[]' }}
+          TF_VAR_monitoring_port_forward_principal_arns: ${{ vars.MONITORING_PORT_FORWARD_PRINCIPAL_ARNS_JSON || '[]' }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=${{ steps.context.outputs.platform_state_key }}" \
+            -backend-config="region=${TF_STATE_REGION}"
+
+          terraform output -json > "$RUNNER_TEMP/platform-outputs.json"
+
       - name: Resolve public endpoint Helm parameters
         if: steps.cluster.outputs.exists == 'true'
         id: public-endpoint-config
@@ -714,7 +750,7 @@ jobs:
           BASE_DOMAIN: ${{ env.FACE_DETECTOR_BASE_DOMAIN }}
           REQUEST_PUBLIC_DNS: ${{ env.FACE_DETECTOR_PUBLIC_DNS_ENABLED }}
           REQUEST_PUBLIC_TLS: ${{ env.FACE_DETECTOR_PUBLIC_TLS_ENABLED }}
-          EKS_OUTPUTS_PATH: ${{ runner.temp }}/eks-outputs.json
+          PLATFORM_OUTPUTS_PATH: ${{ runner.temp }}/platform-outputs.json
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -727,7 +763,7 @@ jobs:
           def normalize_domain(value: str) -> str:
               return value.strip().lower().rstrip(".")
 
-          outputs_path = Path(os.environ["EKS_OUTPUTS_PATH"])
+          outputs_path = Path(os.environ["PLATFORM_OUTPUTS_PATH"])
           outputs = json.loads(outputs_path.read_text(encoding="utf-8")) if outputs_path.exists() else {}
 
           def output_value(name: str):

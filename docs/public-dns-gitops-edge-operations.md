@@ -111,9 +111,9 @@ Không nên dùng Global API Key.
 
 Không nên cấp quyền account-wide nếu chỉ cần sửa DNS của một zone.
 
-## 5. Terraform EKS Làm Gì?
+## 5. Terraform Platform Làm Gì?
 
-`terraform/eks` nhận các biến:
+`terraform/platform` nhận các biến:
 
 ```text
 public_dns_enabled

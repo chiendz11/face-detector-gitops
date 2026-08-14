@@ -71,11 +71,50 @@ updates:
       - "terraform"
 
   - package-ecosystem: "terraform"
-    directory: "/terraform/eks"
+    directory: "/terraform/network"
     schedule:
       interval: "weekly"
       day: "tuesday"
       time: "03:10"
+      timezone: "UTC"
+    target-branch: "master"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "terraform"
+
+  - package-ecosystem: "terraform"
+    directory: "/terraform/cluster"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "03:20"
+      timezone: "UTC"
+    target-branch: "master"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "terraform"
+
+  - package-ecosystem: "terraform"
+    directory: "/terraform/data"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "03:30"
+      timezone: "UTC"
+    target-branch: "master"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "terraform"
+
+  - package-ecosystem: "terraform"
+    directory: "/terraform/platform"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "03:40"
       timezone: "UTC"
     target-branch: "master"
     open-pull-requests-limit: 5

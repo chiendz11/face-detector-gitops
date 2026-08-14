@@ -288,12 +288,12 @@ không cho chart tự tạo Secret ứng dụng
 không mở cluster-wide permission nếu không cần
 ```
 
-## 7. Terraform/EKS Đã Thêm Gì?
+## 7. Terraform Platform Đã Thêm Gì?
 
 Trong:
 
 ```text
-terraform/eks
+terraform/platform
 ```
 
 Đã thêm:
@@ -581,8 +581,8 @@ python -m pytest backend/tests/test_health_api.py
 python -m unittest scripts.tests.test_release_contracts
 helm lint deploy/helm/face-detector
 helm template face-detector deploy/helm/face-detector
-terraform -chdir=terraform/eks fmt -check
-terraform -chdir=terraform/eks validate
+terraform -chdir=terraform/platform fmt -check
+terraform -chdir=terraform/platform validate
 ```
 
 Cluster checks sau deploy:
