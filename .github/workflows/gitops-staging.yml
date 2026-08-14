@@ -1,100 +1,104 @@
-name: GitOps Staging Promotion
+name: Promote Staging
 
 on:
-  workflow_run:
-    workflows:
-      - App Release
+  repository_dispatch:
     types:
-      - completed
+      - promote-staging-v1
 
 permissions:
   contents: read
 
 concurrency:
-  group: gitops-staging-promotion
-  cancel-in-progress: true
+  group: promote-staging
+  cancel-in-progress: false
 
 jobs:
   promote:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == github.event.repository.default_branch
+    if: github.event.client_payload.source_repository == 'chiendz11/face-detector-app'
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: write
-      packages: read
     steps:
-      - name: Checkout branch head
+      - name: Authenticate application release dispatcher
+        env:
+          ACTOR: ${{ github.actor }}
+          EXPECTED_ACTOR: ${{ vars.APP_RELEASE_BOT_LOGIN || '' }}
+        run: |
+          test -n "$EXPECTED_ACTOR"
+          test "$ACTOR" = "$EXPECTED_ACTOR"
+
+      - name: Mint GitOps automation token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.GITOPS_WRITER_APP_ID }}
+          private-key: ${{ secrets.GITOPS_WRITER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Checkout desired state
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch }}
+          ref: master
           fetch-depth: 0
-
-      - name: Skip stale promotion
-        id: branch-head
-        env:
-          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          CURRENT_SHA=$(git rev-parse HEAD)
-          if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Branch head moved to $CURRENT_SHA. Skipping stale promotion for $EXPECTED_SHA."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Set up Python
-        if: steps.branch-head.outputs.skip != 'true'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
-      - name: Install PyYAML
-        if: steps.branch-head.outputs.skip != 'true'
+      - name: Install promotion dependencies
         run: python -m pip install pyyaml
 
-      - name: Resolve published image digests
-        if: steps.branch-head.outputs.skip != 'true'
-        id: image-digests
+      - name: Validate versioned promotion payload
         env:
-          IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
-          REGISTRY_USERNAME: ${{ secrets.GHCR_TOKEN != '' && (secrets.GHCR_USERNAME || github.repository_owner) || github.actor }}
-          REGISTRY_PASSWORD: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          IMAGE_TAG: ${{ github.event.client_payload.image_tag }}
+          BACKEND_DIGEST: ${{ github.event.client_payload.backend_digest }}
+          FRONTEND_DIGEST: ${{ github.event.client_payload.frontend_digest }}
+          NGINX_DIGEST: ${{ github.event.client_payload.nginx_digest }}
         run: |
-          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-          BACKEND_DIGEST=$(python scripts/resolve_registry_digest.py --repository "${OWNER}/face-detector-backend" --reference "$IMAGE_TAG" --username "$REGISTRY_USERNAME" --password "$REGISTRY_PASSWORD")
-          FRONTEND_DIGEST=$(python scripts/resolve_registry_digest.py --repository "${OWNER}/face-detector-admin" --reference "$IMAGE_TAG" --username "$REGISTRY_USERNAME" --password "$REGISTRY_PASSWORD")
-          NGINX_DIGEST=$(python scripts/resolve_registry_digest.py --repository "${OWNER}/face-detector-nginx" --reference "$IMAGE_TAG" --username "$REGISTRY_USERNAME" --password "$REGISTRY_PASSWORD")
-          {
-            echo "backend_digest=$BACKEND_DIGEST"
-            echo "frontend_digest=$FRONTEND_DIGEST"
-            echo "nginx_digest=$NGINX_DIGEST"
-          } >> "$GITHUB_OUTPUT"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$IMAGE_TAG" = "$SOURCE_SHA"
+          for digest in "$BACKEND_DIGEST" "$FRONTEND_DIGEST" "$NGINX_DIGEST"; do
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          done
 
-      - name: Update staging image digests
-        if: steps.branch-head.outputs.skip != 'true'
+      - name: Validate and update immutable image locks
         env:
-          IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+          IMAGE_TAG: ${{ github.event.client_payload.image_tag }}
+          BACKEND_DIGEST: ${{ github.event.client_payload.backend_digest }}
+          FRONTEND_DIGEST: ${{ github.event.client_payload.frontend_digest }}
+          NGINX_DIGEST: ${{ github.event.client_payload.nginx_digest }}
         run: |
           python scripts/update_gitops_image_locks.py \
             --values-file deploy/helm/face-detector/values-staging.yaml \
             --image-tag "$IMAGE_TAG" \
-            --backend-digest "${{ steps.image-digests.outputs.backend_digest }}" \
-            --frontend-digest "${{ steps.image-digests.outputs.frontend_digest }}" \
-            --nginx-digest "${{ steps.image-digests.outputs.nginx_digest }}"
+            --backend-digest "$BACKEND_DIGEST" \
+            --frontend-digest "$FRONTEND_DIGEST" \
+            --nginx-digest "$NGINX_DIGEST"
 
-      - name: Commit staging promotion
-        if: steps.branch-head.outputs.skip != 'true'
+      - name: Open staging promotion pull request
         env:
-          IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
-          TARGET_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository }}
         run: |
-          if git diff --quiet -- deploy/helm/face-detector/values-staging.yaml; then
-            echo "Staging values already point to $IMAGE_TAG."
+          short_sha="${SOURCE_SHA:0:12}"
+          branch="automation/promote-staging-$short_sha"
+          git config user.name "face-detector-gitops[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$branch"
+          git add deploy/helm/face-detector/values-staging.yaml
+          if git diff --cached --quiet; then
+            echo "Staging already pins $SOURCE_SHA."
             exit 0
           fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add deploy/helm/face-detector/values-staging.yaml
-          git commit -m "gitops: promote staging ${IMAGE_TAG} [skip ci]"
-          git push origin "HEAD:${TARGET_BRANCH}"
+          git commit -m "gitops: promote staging $short_sha"
+          git push --force-with-lease origin "$branch"
+          if [ "$(gh pr list --head "$branch" --state open --json number --jq 'length')" = "0" ]; then
+            gh pr create \
+              --base master \
+              --head "$branch" \
+              --title "gitops: promote staging $short_sha" \
+              --body "Promote immutable images from ${SOURCE_REPOSITORY}@${SOURCE_SHA}."
+          fi
