@@ -201,14 +201,14 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Generate build provenance attestation
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ghcr.io/${{ steps.image-meta.outputs.owner }}/${{ matrix.repository }}
           subject-digest: ${{ matrix.subject_digest }}
           push-to-registry: true
 
       - name: Generate SBOM attestation
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ghcr.io/${{ steps.image-meta.outputs.owner }}/${{ matrix.repository }}
           subject-digest: ${{ matrix.subject_digest }}
