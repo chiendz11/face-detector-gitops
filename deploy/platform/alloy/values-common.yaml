@@ -1,0 +1,10 @@
+controller:
+  type: daemonset
+
+alloy:
+  configMap:
+    create: true
+
+serviceMonitor:
+  enabled: true
+  interval: 30s

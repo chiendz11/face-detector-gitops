@@ -3,11 +3,15 @@ kind: Application
 metadata:
   name: face-detector-production
   namespace: ${ARGOCD_NAMESPACE}
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/part-of: face-detector
 spec:
   project: face-detector
   source:
     repoURL: "${ARGOCD_REPO_URL}"
-    targetRevision: ${TARGET_REVISION}
+    targetRevision: "${TARGET_REVISION}"
     path: deploy/helm/face-detector
     helm:
       valueFiles:

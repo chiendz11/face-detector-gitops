@@ -1,0 +1,28 @@
+{{- if .Values.platformResources.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: face-detector-platform-{{ .Values.global.environment }}-resources
+  {{- include "face-detector-platform.applicationMetadata" . | nindent 2 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  project: {{ .Values.global.project }}
+  source:
+    repoURL: {{ required "global.repoURL is required" .Values.global.repoURL | quote }}
+    targetRevision: {{ .Values.global.targetRevision | quote }}
+    path: deploy/helm/platform-resources
+    helm:
+      releaseName: face-detector-platform-resources
+      values: |
+        environment: {{ .Values.global.environmentIdentity | quote }}
+        argocd:
+          namespace: {{ .Values.global.argocdNamespace }}
+        monitoringPortForward:
+          enabled: {{ ne .Values.platformResources.monitoringPortForwardGroup "" }}
+          groupName: {{ .Values.platformResources.monitoringPortForwardGroup | quote }}
+  destination:
+    {{- include "face-detector-platform.destination" . | nindent 4 }}
+    namespace: {{ .Values.global.monitoringNamespace }}
+  {{- include "face-detector-platform.syncPolicy" . | nindent 2 }}
+{{- end }}

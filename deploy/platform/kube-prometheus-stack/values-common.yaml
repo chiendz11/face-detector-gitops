@@ -1,0 +1,51 @@
+fullnameOverride: monitoring
+
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+
+alertmanager:
+  service:
+    type: ClusterIP
+  alertmanagerSpec:
+    alertmanagerConfigSelector: {}
+    alertmanagerConfigNamespaceSelector: {}
+
+grafana:
+  service:
+    type: ClusterIP
+  defaultDashboardsTimezone: Asia/Ho_Chi_Minh
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      access: proxy
+      url: http://loki-gateway.monitoring.svc.cluster.local
+      isDefault: false
+      jsonData:
+        maxLines: 1000
+  persistence:
+    enabled: false
+  sidecar:
+    dashboards:
+      searchNamespace: ALL
+
+prometheus:
+  service:
+    type: ClusterIP
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+    probeSelectorNilUsesHelmValues: false
+    probeSelector: {}
+    probeNamespaceSelector: {}

@@ -1,0 +1,23 @@
+loki:
+  limits_config:
+    retention_period: 7d
+
+singleBinary:
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 750m
+      memory: 1Gi
+
+gateway:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

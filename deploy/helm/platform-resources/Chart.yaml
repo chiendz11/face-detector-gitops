@@ -1,0 +1,6 @@
+apiVersion: v2
+name: face-detector-platform-resources
+description: Platform integrations managed by Argo CD after operators and CRDs are available
+type: application
+version: 0.1.0
+appVersion: "1.0"

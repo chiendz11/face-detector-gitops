@@ -34,8 +34,13 @@ jobs:
             scripts.tests.test_update_gitops_image_locks \
             scripts.tests.test_repository_contracts
 
-      - name: Lint Helm chart
-        run: helm lint deploy/helm/face-detector
+      - name: Lint owned Helm charts
+        run: |
+          helm lint deploy/helm/face-detector
+          helm lint deploy/helm/platform-applications \
+            --set global.repoURL=https://github.com/example/face-detector-gitops.git \
+            --set clusterAutoscaler.roleArn=arn:aws:iam::123456789012:role/cluster-autoscaler
+          helm lint deploy/helm/platform-resources
 
       - name: Render staging and production contracts
         env:
@@ -53,6 +58,68 @@ jobs:
               --set frontendAdmin.image.digest="$FAKE_DIGEST" \
               --set nginx.image.repository=ghcr.io/example/nginx \
               --set nginx.image.digest="$FAKE_DIGEST" > /dev/null
+          done
+
+      - name: Render platform Application contracts
+        run: |
+          for environment in sandbox staging production; do
+            automated=true
+            if [ "$environment" = production ]; then
+              automated=false
+            fi
+
+            helm template "face-detector-platform-$environment" deploy/helm/platform-applications \
+              --set global.repoURL=https://github.com/example/face-detector-gitops.git \
+              --set global.environment="$environment" \
+              --set global.environmentIdentity="$environment" \
+              --set global.clusterName="face-detector-$environment" \
+              --set global.automated="$automated" \
+              --set clusterAutoscaler.roleArn=arn:aws:iam::123456789012:role/cluster-autoscaler \
+              --set externalDns.enabled=true \
+              --set externalDns.baseDomain=face.example.com \
+              --set externalDns.provider=cloudflare > /dev/null
+
+            helm template "face-detector-platform-resources-$environment" deploy/helm/platform-resources \
+              --set environment="$environment" > /dev/null
+          done
+
+      - name: Render pinned upstream platform charts
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+          helm repo add kedacore https://kedacore.github.io/charts
+          helm repo add autoscaler https://kubernetes.github.io/autoscaler
+          helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
+          helm repo update
+
+          for environment in sandbox staging production; do
+            helm template metrics-server metrics-server/metrics-server --version 3.13.0 \
+              -f deploy/platform/metrics-server/values-common.yaml \
+              -f "deploy/platform/metrics-server/values-$environment.yaml" > /dev/null
+            helm template keda kedacore/keda --version 2.19.0 \
+              -f deploy/platform/keda/values-common.yaml \
+              -f "deploy/platform/keda/values-$environment.yaml" > /dev/null
+            helm template cluster-autoscaler autoscaler/cluster-autoscaler --version 9.56.0 \
+              -f deploy/platform/cluster-autoscaler/values-common.yaml \
+              -f "deploy/platform/cluster-autoscaler/values-$environment.yaml" \
+              --set awsRegion=ap-southeast-1 \
+              --set autoDiscovery.clusterName="face-detector-$environment" > /dev/null
+            helm template external-dns external-dns/external-dns --version 1.15.2 \
+              -f deploy/platform/external-dns/values-common.yaml \
+              -f "deploy/platform/external-dns/values-$environment.yaml" \
+              --set provider.name=cloudflare \
+              --set txtOwnerId="face-detector-$environment" \
+              --set 'domainFilters[0]=face.example.com' > /dev/null
+            helm template monitoring prometheus-community/kube-prometheus-stack --version 85.3.3 \
+              -f deploy/platform/kube-prometheus-stack/values-common.yaml \
+              -f "deploy/platform/kube-prometheus-stack/values-$environment.yaml" > /dev/null
+            helm template loki grafana/loki --version 7.0.0 \
+              -f deploy/platform/loki/values-common.yaml \
+              -f "deploy/platform/loki/values-$environment.yaml" > /dev/null
+            helm template alloy grafana/alloy --version 1.8.2 \
+              -f deploy/platform/alloy/values-common.yaml \
+              -f "deploy/platform/alloy/values-$environment.yaml" > /dev/null
           done
 
   gateway:

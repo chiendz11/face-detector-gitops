@@ -1,0 +1,50 @@
+global:
+  repoURL: ""
+  targetRevision: master
+  environment: staging
+  environmentIdentity: staging
+  clusterName: face-detector-staging
+  clusterVersion: "1.30"
+  awsRegion: ap-southeast-1
+  automated: true
+  project: face-detector-platform
+  argocdNamespace: argocd
+  monitoringNamespace: monitoring
+
+metricsServer:
+  enabled: true
+  chartVersion: 3.13.0
+
+kubePrometheusStack:
+  enabled: true
+  chartVersion: 85.3.3
+
+loki:
+  enabled: true
+  chartVersion: 7.0.0
+
+alloy:
+  enabled: true
+  chartVersion: 1.8.2
+
+keda:
+  enabled: true
+  chartVersion: 2.19.0
+
+clusterAutoscaler:
+  enabled: true
+  chartVersion: 9.56.0
+  roleArn: ""
+
+externalDns:
+  enabled: false
+  chartVersion: 1.15.2
+  provider: cloudflare
+  baseDomain: ""
+  zoneId: ""
+  roleArn: ""
+  cloudflareSecretName: external-dns-cloudflare
+
+platformResources:
+  enabled: true
+  monitoringPortForwardGroup: monitoring-port-forwarders

@@ -4,7 +4,7 @@
 
 Repo này chỉ lưu desired state Kubernetes:
 
-- Helm chart và values cho staging/production;
+- Helm chart và values cho app lẫn platform workload ở sandbox/staging/production;
 - Argo CD AppProject và Application templates;
 - image tag theo commit và immutable digest `sha256`;
 - workflow mở promotion PR.
@@ -57,8 +57,14 @@ Rollback là revert commit promotion để quay về digest cũ. Không rebuild 
 
 ## Argo CD Boundary
 
-AppProject chỉ allow URL của repo này và namespace/cluster resources đã khai báo. Argo CD dùng
-GitHub App/deploy credential chỉ đọc repo GitOps; nó không đọc app repo và không đọc infra repo.
+AppProject ứng dụng chỉ allow URL của repo này và namespace app. AppProject platform được tách
+riêng, chỉ allow repo này cùng các upstream Helm repository đã pin để quản lý operator/add-on.
+Argo CD dùng GitHub App/deploy credential chỉ đọc repo GitOps; nó không đọc app repo và không đọc
+infra repo.
+
+Terraform chỉ bootstrap Argo CD và AWS/EKS prerequisites. kube-prometheus-stack, Loki, Alloy,
+metrics-server, KEDA, cluster-autoscaler và ExternalDNS đều do child Application trong repo này
+quản lý. Xem `docs/platform-gitops-architecture.md`.
 
 ## Trước Khi Bật Actions
 

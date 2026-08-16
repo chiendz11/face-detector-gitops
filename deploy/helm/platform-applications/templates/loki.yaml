@@ -1,0 +1,25 @@
+{{- if .Values.loki.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: face-detector-platform-{{ .Values.global.environment }}-loki
+  {{- include "face-detector-platform.applicationMetadata" . | nindent 2 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+spec:
+  project: {{ .Values.global.project }}
+  sources:
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: loki
+      targetRevision: {{ .Values.loki.chartVersion | quote }}
+      helm:
+        releaseName: loki
+        valueFiles:
+          - $values/deploy/platform/loki/values-common.yaml
+          - $values/deploy/platform/loki/values-{{ .Values.global.environment }}.yaml
+    {{- include "face-detector-platform.valuesSource" . | nindent 4 }}
+  destination:
+    {{- include "face-detector-platform.destination" . | nindent 4 }}
+    namespace: {{ .Values.global.monitoringNamespace }}
+  {{- include "face-detector-platform.syncPolicy" . | nindent 2 }}
+{{- end }}

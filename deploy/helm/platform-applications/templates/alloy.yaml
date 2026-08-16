@@ -1,0 +1,112 @@
+{{- if .Values.alloy.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: face-detector-platform-{{ .Values.global.environment }}-alloy
+  {{- include "face-detector-platform.applicationMetadata" . | nindent 2 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: {{ .Values.global.project }}
+  sources:
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: alloy
+      targetRevision: {{ .Values.alloy.chartVersion | quote }}
+      helm:
+        releaseName: alloy
+        valueFiles:
+          - $values/deploy/platform/alloy/values-common.yaml
+          - $values/deploy/platform/alloy/values-{{ .Values.global.environment }}.yaml
+        values: |
+          alloy:
+            configMap:
+              content: |-
+                discovery.kubernetes "pods" {
+                  role = "pod"
+
+                  selectors {
+                    role  = "pod"
+                    field = "spec.nodeName=" + coalesce(sys.env("HOSTNAME"), constants.hostname)
+                  }
+                }
+
+                discovery.relabel "pod_logs" {
+                  targets = discovery.kubernetes.pods.targets
+
+                  rule {
+                    source_labels = ["__meta_kubernetes_namespace"]
+                    action        = "keep"
+                    regex         = "facedetector|argocd|monitoring|keda|kube-system"
+                  }
+
+                  rule {
+                    source_labels = ["__meta_kubernetes_namespace"]
+                    target_label  = "namespace"
+                  }
+
+                  rule {
+                    source_labels = ["__meta_kubernetes_pod_name"]
+                    target_label  = "pod"
+                  }
+
+                  rule {
+                    source_labels = ["__meta_kubernetes_pod_container_name"]
+                    target_label  = "container"
+                  }
+
+                  rule {
+                    source_labels = ["__meta_kubernetes_pod_node_name"]
+                    target_label  = "node"
+                  }
+
+                  rule {
+                    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+                    regex         = "(.+)"
+                    target_label  = "app"
+                  }
+
+                  rule {
+                    source_labels = ["__meta_kubernetes_pod_label_app"]
+                    regex         = "(.+)"
+                    target_label  = "app"
+                  }
+
+                  rule {
+                    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+                    regex         = "(.+)"
+                    target_label  = "service"
+                  }
+
+                  rule {
+                    source_labels = ["__meta_kubernetes_pod_label_app"]
+                    regex         = "(.+)"
+                    target_label  = "service"
+                  }
+
+                  rule {
+                    target_label = "env"
+                    replacement  = {{ .Values.global.environmentIdentity | quote }}
+                  }
+
+                  rule {
+                    target_label = "cluster"
+                    replacement  = {{ .Values.global.clusterName | quote }}
+                  }
+                }
+
+                loki.source.kubernetes "pod_logs" {
+                  targets    = discovery.relabel.pod_logs.output
+                  forward_to = [loki.write.default.receiver]
+                }
+
+                loki.write "default" {
+                  endpoint {
+                    url = "http://loki-gateway.{{ .Values.global.monitoringNamespace }}.svc.cluster.local/loki/api/v1/push"
+                  }
+                }
+    {{- include "face-detector-platform.valuesSource" . | nindent 4 }}
+  destination:
+    {{- include "face-detector-platform.destination" . | nindent 4 }}
+    namespace: {{ .Values.global.monitoringNamespace }}
+  {{- include "face-detector-platform.syncPolicy" . | nindent 2 }}
+{{- end }}

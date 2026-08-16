@@ -1,0 +1,25 @@
+{{- if .Values.keda.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: face-detector-platform-{{ .Values.global.environment }}-keda
+  {{- include "face-detector-platform.applicationMetadata" . | nindent 2 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+spec:
+  project: {{ .Values.global.project }}
+  sources:
+    - repoURL: https://kedacore.github.io/charts
+      chart: keda
+      targetRevision: {{ .Values.keda.chartVersion | quote }}
+      helm:
+        releaseName: keda
+        valueFiles:
+          - $values/deploy/platform/keda/values-common.yaml
+          - $values/deploy/platform/keda/values-{{ .Values.global.environment }}.yaml
+    {{- include "face-detector-platform.valuesSource" . | nindent 4 }}
+  destination:
+    {{- include "face-detector-platform.destination" . | nindent 4 }}
+    namespace: keda
+  {{- include "face-detector-platform.syncPolicy" . | nindent 2 }}
+{{- end }}
