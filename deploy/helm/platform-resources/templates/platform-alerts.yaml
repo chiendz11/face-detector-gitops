@@ -1,0 +1,38 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: face-detector-platform
+  labels:
+    app.kubernetes.io/name: face-detector-platform-alerts
+    app.kubernetes.io/part-of: face-detector-platform
+spec:
+  groups:
+    - name: face-detector.platform
+      rules:
+        - alert: FaceDetectorArgoCdAppDegraded
+          expr: max by (name) (argocd_app_info{health_status!="Healthy", name=~"face-detector-.*"}) == 1
+          for: 10m
+          labels:
+            severity: critical
+            environment: {{ .Values.environment | quote }}
+          annotations:
+            summary: Face Detector Argo CD application is degraded
+            description: Argo CD reports a degraded Face Detector application for more than 10 minutes.
+        - alert: FaceDetectorArgoCdAppOutOfSync
+          expr: max by (name) (argocd_app_info{sync_status!="Synced", name=~"face-detector-.*"}) == 1
+          for: 15m
+          labels:
+            severity: warning
+            environment: {{ .Values.environment | quote }}
+          annotations:
+            summary: Face Detector Argo CD application is out of sync
+            description: Argo CD reports a Face Detector application out of sync for more than 15 minutes.
+        - alert: FaceDetectorKubernetesNodeNotReady
+          expr: kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 10m
+          labels:
+            severity: critical
+            environment: {{ .Values.environment | quote }}
+          annotations:
+            summary: Kubernetes node is not ready
+            description: A Kubernetes node has not been ready for more than 10 minutes.

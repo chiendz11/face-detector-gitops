@@ -1,0 +1,25 @@
+{{- if .Values.metricsServer.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: face-detector-platform-{{ .Values.global.environment }}-metrics-server
+  {{- include "face-detector-platform.applicationMetadata" . | nindent 2 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-30"
+spec:
+  project: {{ .Values.global.project }}
+  sources:
+    - repoURL: https://kubernetes-sigs.github.io/metrics-server/
+      chart: metrics-server
+      targetRevision: {{ .Values.metricsServer.chartVersion | quote }}
+      helm:
+        releaseName: metrics-server
+        valueFiles:
+          - $values/deploy/platform/metrics-server/values-common.yaml
+          - $values/deploy/platform/metrics-server/values-{{ .Values.global.environment }}.yaml
+    {{- include "face-detector-platform.valuesSource" . | nindent 4 }}
+  destination:
+    {{- include "face-detector-platform.destination" . | nindent 4 }}
+    namespace: kube-system
+  {{- include "face-detector-platform.syncPolicy" . | nindent 2 }}
+{{- end }}

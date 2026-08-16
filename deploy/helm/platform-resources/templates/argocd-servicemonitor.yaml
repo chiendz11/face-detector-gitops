@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: face-detector-argocd
+  labels:
+    app.kubernetes.io/name: face-detector-argocd-monitoring
+    app.kubernetes.io/part-of: face-detector-platform
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.argocd.namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: argocd
+  endpoints:
+    - port: http-metrics
+      interval: 30s
+      path: /metrics

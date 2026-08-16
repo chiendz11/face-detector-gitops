@@ -1,0 +1,25 @@
+{{- if .Values.kubePrometheusStack.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: face-detector-platform-{{ .Values.global.environment }}-monitoring
+  {{- include "face-detector-platform.applicationMetadata" . | nindent 2 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-30"
+spec:
+  project: {{ .Values.global.project }}
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: {{ .Values.kubePrometheusStack.chartVersion | quote }}
+      helm:
+        releaseName: kube-prometheus-stack
+        valueFiles:
+          - $values/deploy/platform/kube-prometheus-stack/values-common.yaml
+          - $values/deploy/platform/kube-prometheus-stack/values-{{ .Values.global.environment }}.yaml
+    {{- include "face-detector-platform.valuesSource" . | nindent 4 }}
+  destination:
+    {{- include "face-detector-platform.destination" . | nindent 4 }}
+    namespace: {{ .Values.global.monitoringNamespace }}
+  {{- include "face-detector-platform.syncPolicy" . | nindent 2 }}
+{{- end }}

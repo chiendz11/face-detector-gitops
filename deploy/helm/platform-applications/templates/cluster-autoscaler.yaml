@@ -1,0 +1,36 @@
+{{- if .Values.clusterAutoscaler.enabled }}
+{{- $roleArn := required "clusterAutoscaler.roleArn is required when cluster-autoscaler is enabled" .Values.clusterAutoscaler.roleArn }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: face-detector-platform-{{ .Values.global.environment }}-cluster-autoscaler
+  {{- include "face-detector-platform.applicationMetadata" . | nindent 2 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+spec:
+  project: {{ .Values.global.project }}
+  sources:
+    - repoURL: https://kubernetes.github.io/autoscaler
+      chart: cluster-autoscaler
+      targetRevision: {{ .Values.clusterAutoscaler.chartVersion | quote }}
+      helm:
+        releaseName: cluster-autoscaler
+        valueFiles:
+          - $values/deploy/platform/cluster-autoscaler/values-common.yaml
+          - $values/deploy/platform/cluster-autoscaler/values-{{ .Values.global.environment }}.yaml
+        values: |
+          awsRegion: {{ .Values.global.awsRegion }}
+          autoDiscovery:
+            clusterName: {{ .Values.global.clusterName }}
+          image:
+            tag: v{{ .Values.global.clusterVersion }}.0
+          rbac:
+            serviceAccount:
+              annotations:
+                eks.amazonaws.com/role-arn: {{ $roleArn | quote }}
+    {{- include "face-detector-platform.valuesSource" . | nindent 4 }}
+  destination:
+    {{- include "face-detector-platform.destination" . | nindent 4 }}
+    namespace: kube-system
+  {{- include "face-detector-platform.syncPolicy" . | nindent 2 }}
+{{- end }}

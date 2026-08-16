@@ -1,0 +1,56 @@
+{{- if .Values.externalDns.enabled }}
+{{- $baseDomain := required "externalDns.baseDomain is required when ExternalDNS is enabled" .Values.externalDns.baseDomain }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: face-detector-platform-{{ .Values.global.environment }}-external-dns
+  {{- include "face-detector-platform.applicationMetadata" . | nindent 2 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+spec:
+  project: {{ .Values.global.project }}
+  sources:
+    - repoURL: https://kubernetes-sigs.github.io/external-dns/
+      chart: external-dns
+      targetRevision: {{ .Values.externalDns.chartVersion | quote }}
+      helm:
+        releaseName: external-dns
+        valueFiles:
+          - $values/deploy/platform/external-dns/values-common.yaml
+          - $values/deploy/platform/external-dns/values-{{ .Values.global.environment }}.yaml
+        values: |
+          provider:
+            name: {{ .Values.externalDns.provider }}
+          txtOwnerId: {{ .Values.global.clusterName }}
+          domainFilters:
+            - {{ $baseDomain | quote }}
+          extraArgs:
+            {{- if and (eq .Values.externalDns.provider "route53") .Values.externalDns.zoneId }}
+            - --aws-zone-type=public
+            - --zone-id-filter={{ .Values.externalDns.zoneId }}
+            {{- else if and (eq .Values.externalDns.provider "cloudflare") .Values.externalDns.zoneId }}
+            - --zone-id-filter={{ .Values.externalDns.zoneId }}
+            {{- else }}
+            []
+            {{- end }}
+          {{- if eq .Values.externalDns.provider "cloudflare" }}
+          env:
+            - name: CF_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalDns.cloudflareSecretName }}
+                  key: api-token
+          {{- end }}
+          serviceAccount:
+            create: true
+            name: external-dns
+            {{- if eq .Values.externalDns.provider "route53" }}
+            annotations:
+              eks.amazonaws.com/role-arn: {{ required "externalDns.roleArn is required for Route53" .Values.externalDns.roleArn | quote }}
+            {{- end }}
+    {{- include "face-detector-platform.valuesSource" . | nindent 4 }}
+  destination:
+    {{- include "face-detector-platform.destination" . | nindent 4 }}
+    namespace: kube-system
+  {{- include "face-detector-platform.syncPolicy" . | nindent 2 }}
+{{- end }}

@@ -1,0 +1,8 @@
+loki:
+  limits_config:
+    retention_period: 30d
+
+singleBinary:
+  persistence:
+    enabled: true
+    size: 50Gi

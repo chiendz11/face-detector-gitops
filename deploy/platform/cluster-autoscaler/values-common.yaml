@@ -1,0 +1,10 @@
+cloudProvider: aws
+fullnameOverride: cluster-autoscaler
+rbac:
+  serviceAccount:
+    create: true
+    name: cluster-autoscaler
+extraArgs:
+  balance-similar-node-groups: "true"
+  expander: least-waste
+  skip-nodes-with-local-storage: "false"

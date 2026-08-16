@@ -1,0 +1,9 @@
+environment: staging
+
+argocd:
+  namespace: argocd
+
+monitoringPortForward:
+  enabled: true
+  groupName: monitoring-port-forwarders
+  grafanaSecretName: monitoring-grafana

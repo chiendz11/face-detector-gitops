@@ -1,0 +1,11 @@
+alertmanager:
+  alertmanagerSpec:
+    replicas: 2
+
+grafana:
+  replicas: 2
+
+prometheus:
+  prometheusSpec:
+    retention: 30d
+    replicas: 2
